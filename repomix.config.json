@@ -1,0 +1,25 @@
+{
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "headerText": "AudioFloor (com.Dexter.AudioFloor) — Meta Quest 3 / Quest 3S VR Music Visualizer & Built-in GeckoView Browser. Read AGENTS.md and .agent-docs/index.md first for full architecture invariants and non-negotiable Quest hardware bug fixes.",
+    "showLineNumbers": true
+  },
+  "include": [
+    "README.md",
+    "AGENTS.md",
+    ".agent-docs/**",
+    "Packages/manifest.json",
+    "ProjectSettings/ProjectVersion.txt",
+    "Assets/Plugins/Android/AndroidManifest.xml",
+    "Assets/StreamingAssets/sonic_browser_ext/**",
+    "Assets/SonicTopography/**"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/*.meta"
+    ]
+  }
+}

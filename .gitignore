@@ -1,0 +1,45 @@
+# Ignore everything by default (AI Context & Repomix source-only repository)
+*
+
+# Un-ignore root documentation & configs
+!.gitignore
+!README.md
+!AGENTS.md
+!repomix.config.json
+
+# Un-ignore living architecture knowledge base (.agent-docs/)
+!.agent-docs/
+!.agent-docs/**
+
+# Un-ignore Unity package dependencies & engine version
+!Packages/
+!Packages/manifest.json
+!ProjectSettings/
+!ProjectSettings/ProjectVersion.txt
+
+# Un-ignore Android Manifest & built-in GeckoView WebExtension
+!Assets/
+!Assets/Plugins/
+!Assets/Plugins/Android/
+!Assets/Plugins/Android/AndroidManifest.xml
+!Assets/StreamingAssets/
+!Assets/StreamingAssets/sonic_browser_ext/
+!Assets/StreamingAssets/sonic_browser_ext/**
+
+# Un-ignore all AudioFloor / SonicTopography C# scripts, Editor build tools, Java bridges & HLSL shaders
+!Assets/SonicTopography/
+!Assets/SonicTopography/Scripts/
+!Assets/SonicTopography/Scripts/*.cs
+!Assets/SonicTopography/Editor/
+!Assets/SonicTopography/Editor/*.cs
+!Assets/SonicTopography/Plugins/
+!Assets/SonicTopography/Plugins/Android/
+!Assets/SonicTopography/Plugins/Android/*.java
+!Assets/SonicTopography/Resources/
+!Assets/SonicTopography/Resources/Shaders/
+!Assets/SonicTopography/Resources/Shaders/*.shader
+
+# Always ignore Unity .meta files and OS temp files anywhere
+**/*.meta
+**/.DS_Store
+**/Thumbs.db

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 2,
+  "name": "AudioFloor Audio Bridge",
+  "version": "1.0.1",
+  "description": "Bridges Web Audio analyser spectrum and media controls to AudioFloor.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "audiofloor-bridge@audiofloor.app"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons",
+    "tabs",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
