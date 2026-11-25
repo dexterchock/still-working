@@ -366,6 +366,27 @@ public class SonicGeckoBrowserBridge {
         postCommandToExtension("setVolume", null, clamped, false);
     }
 
+    public void setSpatialAudio(boolean active, float lx, float ly, float lz, float rx, float ry, float rz, float refDist) {
+        mUiHandler.post(() -> {
+            if (mPort == null || mShutdown) return;
+            try {
+                JSONObject obj = new JSONObject();
+                obj.put("cmd", "spatialPose");
+                obj.put("active", active);
+                obj.put("lx", lx);
+                obj.put("ly", ly);
+                obj.put("lz", lz);
+                obj.put("rx", rx);
+                obj.put("ry", ry);
+                obj.put("rz", rz);
+                obj.put("refDist", refDist);
+                mPort.postMessage(obj);
+            } catch (Throwable t) {
+                Log.w(TAG, "setSpatialAudio post failed: " + t.getMessage());
+            }
+        });
+    }
+
     public void requestActiveInputFocus() {
         postCommandToExtension("requestActiveValue", null, null, false);
     }

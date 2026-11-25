@@ -1,16 +1,16 @@
 # SampleScene
 
-Last updated: 2026-11-22
+Last updated: 2026-11-26
 
 ## Role
 `Assets/Scenes/SampleScene.unity` is the sole shipped and active runtime scene configured in `SonicQuestBuildTools.BuildQuest3Apk()`. (`Assets/Scenes/BasicScene.unity` is unused.)
 
 ## Key Scene Objects & Spatial Layout
 - **XR Origin Rig (`XR Origin Hands (XR Rig)` / `XROrigin`)**:
-  - Hosts head camera (`nearClipPlane <= 0.01`, `farClipPlane >= 350`, solid `#000000` background), Left/Right XRI controllers, hand interactors, `XRInputModalityManager`, `XRUIInputModule`, and locomotion providers.
+  - Hosts head camera (`nearClipPlane <= 0.01`, `farClipPlane >= 350`, `#000000` alpha 1 in VR, alpha 0 in AR passthrough), Left/Right XRI controllers, hand interactors, `XRInputModalityManager`, `XRUIInputModule`, and locomotion providers.
   - Dynamically gets `Left Controller Grip Anchor` and `Right Controller Grip Anchor` attached under `CameraFloorOffsetObject` by `SonicMetaQuestController.EnsureControllerVisuals()`.
 - **`SonicTopographyManager` (Auto-created if missing on `AfterSceneLoad`)**:
-  - Holds `SonicTopographyAudioEngine`, `SonicTopographyVisualizer`, `SonicTopographyVRBootstrap`, `AudioFloorControllerActions`, `SonicMusicLibraryManager`, `SonicMusicPlayerController`, and `SonicSpatialUIManager`.
+  - Holds `SonicTopographyAudioEngine` (+ child `SonicSpatialAudioEmitter`), `SonicTopographyVisualizer`, `SonicTopographyVRBootstrap`, `AudioFloorControllerActions`, `SonicMusicLibraryManager`, `SonicMusicPlayerController`, `SonicSpatialUIManager`, `SonicWebBrowserManager`, `SonicMixedRealityManager`, `SonicArKeychainController`, and `SonicArTerrainManipulator`.
 - **`SonicStarRiverVisualizer` (Auto-created if missing on `AfterSceneLoad`)**:
   - Renders the 3D Star River wave and ambient starfield point clouds and drives the Glass Stage LED color (`_LedColor`, `_AudioPulse`, `_AudioBeat`).
 - **`GlassStageCube`** (`position = (0, -0.06, 0)`, `scale = (3.4, 0.12, 3.4)`, top surface `Y = 0`):

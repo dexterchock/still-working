@@ -10,6 +10,11 @@
 
   let audioCtx = null;
   let analyser = null;
+  let dryGain = null;
+  let wetGain = null;
+  let pannerL = null;
+  let pannerR = null;
+  let splitter = null;
   const hookedElements = new WeakSet();
   const knownElements = new Set();
   const freqBuf = new Uint8Array(BIN_COUNT);
@@ -57,9 +62,45 @@
       analyser.fftSize = FFT_SIZE;
       analyser.minDecibels = -85;
       analyser.maxDecibels = -10;
+      analyser.channelCountMode = 'explicit';
+      analyser.channelCount = 2;
       // Unsmoothed per-frame FFT so Unity runs one identical temporal pass for local & browser audio
       analyser.smoothingTimeConstant = 0.0;
-      analyser.connect(audioCtx.destination);
+
+      // Dual-path output: Analyser stays pre-spatialization so FFT is immune to AR distance attenuation.
+      dryGain = audioCtx.createGain();
+      dryGain.gain.value = 1.0;
+      analyser.connect(dryGain);
+      dryGain.connect(audioCtx.destination);
+
+      try {
+        splitter = audioCtx.createChannelSplitter(2);
+        pannerL = audioCtx.createPanner();
+        pannerR = audioCtx.createPanner();
+        for (const p of [pannerL, pannerR]) {
+          p.panningModel = 'HRTF';
+          p.distanceModel = 'inverse';
+          p.refDistance = 1.2;
+          p.maxDistance = 12.0;
+          p.rolloffFactor = 0.62;
+          p.coneInnerAngle = 360;
+          p.coneOuterAngle = 360;
+        }
+        wetGain = audioCtx.createGain();
+        wetGain.gain.value = 0.0;
+
+        analyser.connect(splitter);
+        splitter.connect(pannerL, 0);
+        splitter.connect(pannerR, 1);
+        pannerL.connect(wetGain);
+        pannerR.connect(wetGain);
+        wetGain.connect(audioCtx.destination);
+      } catch (_) {
+        // Fallback to pure dry path if PannerNode is restricted on a given page
+        pannerL = null;
+        pannerR = null;
+        wetGain = null;
+      }
     }
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().catch(() => {});
@@ -513,6 +554,32 @@
           reportEditable(active, 'inputSync', false);
         } else {
           reportInputBlurred();
+        }
+        break;
+      }
+      case 'spatialPose': {
+        if (!audioCtx || !dryGain || !wetGain || !pannerL || !pannerR) break;
+        const now = audioCtx.currentTime;
+        const active = !!msg.active;
+        const targetDry = active ? 0.18 : 1.0;
+        const targetWet = active ? 0.82 : 0.0;
+        dryGain.gain.setTargetAtTime(targetDry, now, 0.035);
+        wetGain.gain.setTargetAtTime(targetWet, now, 0.035);
+        if (active) {
+          const refD = Math.max(0.6, Number(msg.refDist) || 1.2);
+          pannerL.refDistance = refD;
+          pannerR.refDistance = refD;
+          if (pannerL.positionX) {
+            pannerL.positionX.setTargetAtTime(Number(msg.lx) || 0, now, 0.035);
+            pannerL.positionY.setTargetAtTime(Number(msg.ly) || 0, now, 0.035);
+            pannerL.positionZ.setTargetAtTime(Number(msg.lz) || -1, now, 0.035);
+            pannerR.positionX.setTargetAtTime(Number(msg.rx) || 0, now, 0.035);
+            pannerR.positionY.setTargetAtTime(Number(msg.ry) || 0, now, 0.035);
+            pannerR.positionZ.setTargetAtTime(Number(msg.rz) || -1, now, 0.035);
+          } else if (typeof pannerL.setPosition === 'function') {
+            pannerL.setPosition(Number(msg.lx) || 0, Number(msg.ly) || 0, Number(msg.lz) || -1);
+            pannerR.setPosition(Number(msg.rx) || 0, Number(msg.ry) || 0, Number(msg.rz) || -1);
+          }
         }
         break;
       }

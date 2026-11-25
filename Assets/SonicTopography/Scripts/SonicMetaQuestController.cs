@@ -29,6 +29,9 @@ namespace SonicTopography
         [Header("Hand Setup")]
         [SerializeField] private ControllerHand hand = ControllerHand.Right;
 
+        // Hide 3D Touch Plus meshes in AR (user sees physical controllers in passthrough), while keeping pointer rays/dots.
+        public static bool HideControllerModelsInAr = true;
+
         [Header("Official Model References")]
         [SerializeField] private Transform modelContainer;
         [SerializeField] private GameObject modelRoot;
@@ -381,7 +384,8 @@ namespace SonicTopography
         [BeforeRenderOrder(500)]
         private void OnBeforeRenderTrimPointerLine()
         {
-            if (modelRoot == null || !modelRoot.activeInHierarchy) return;
+            bool hiddenOnlyForAr = HideControllerModelsInAr && SonicMixedRealityManager.IsArVisualActive && !IsHandTrackingActive();
+            if (modelRoot == null || (!modelRoot.activeInHierarchy && !hiddenOnlyForAr)) return;
 
             if (_cachedLineRenderer == null && !_lineRendererSearched)
             {
@@ -672,7 +676,8 @@ namespace SonicTopography
                 transform.localRotation = targetRot;
             }
 
-            bool shouldShow = isTracked && transform.localPosition.sqrMagnitude > 0.0025f;
+            bool hideInAr = HideControllerModelsInAr && SonicMixedRealityManager.IsArVisualActive;
+            bool shouldShow = !hideInAr && isTracked && transform.localPosition.sqrMagnitude > 0.0025f;
             if (modelRoot != null && modelRoot.activeSelf != shouldShow)
             {
                 modelRoot.SetActive(shouldShow);

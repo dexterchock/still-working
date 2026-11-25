@@ -109,6 +109,95 @@ namespace SonicTopography
         // Platter rotation state
         private float _platterRotationRad = 0f;
 
+        // Mixed Reality (AR) adaptation state
+        private float _arBlend = 0f;
+        private Vector3 _arPlatterPos = new Vector3(0f, -26f, 64f);
+        private Quaternion _arPlatterRot = Quaternion.identity;
+        private float _arPlatterScale = 1f;
+        private bool _arOcclusionEnabled = false;
+        private bool _vrEffectsHidden = false;
+
+        public float CurrentPlatterRotationDegrees => _platterRotationRad * Mathf.Rad2Deg;
+        public float LastAudioEnergy { get; private set; }
+        public float LastBassEnergy { get; private set; }
+        public float LastWarmth { get; private set; }
+        public Vector4[] RipplePosTimeStrengthBuffer => _ripplePosTimeStrength;
+        public Vector4[] RippleStateBuffer => _rippleState;
+
+        public void TriggerRippleAtLocalPos(Vector2 localXZ, float strength, bool isWhite = false)
+        {
+            AddRipple(localXZ.x, localXZ.y, strength, isWhite);
+        }
+
+        public void GetCurrentEffectivePlatterPose(out Vector3 pos, out Quaternion rot, out float scale)
+        {
+            if (_platterRoot != null)
+            {
+                pos = _platterRoot.transform.position;
+                rot = _platterRoot.transform.rotation;
+                scale = _platterRoot.transform.localScale.x;
+                return;
+            }
+            if (_arBlend > 0.0001f)
+            {
+                pos = _arPlatterPos;
+                rot = _arPlatterRot * Quaternion.Euler(0f, _platterRotationRad * Mathf.Rad2Deg, 0f);
+                scale = Mathf.Max(0.0005f, _arPlatterScale);
+            }
+            else
+            {
+                pos = platterWorldPosition;
+                rot = Quaternion.Euler(0f, _platterRotationRad * Mathf.Rad2Deg, 0f);
+                scale = 1f;
+            }
+        }
+
+        public void SetArModeState(float arBlend, Vector3 arPos, Quaternion arRot, float arScale, bool occlusionEnabled)
+        {
+            _arBlend = Mathf.Clamp01(arBlend);
+            _arPlatterPos = arPos;
+            _arPlatterRot = arRot;
+            _arPlatterScale = Mathf.Max(0.0005f, arScale);
+            _arOcclusionEnabled = occlusionEnabled;
+
+            Vector3 effectivePos = _arBlend > 0.0001f ? _arPlatterPos : platterWorldPosition;
+            Quaternion effectiveRot = _arBlend > 0.0001f
+                ? _arPlatterRot * Quaternion.Euler(0f, _platterRotationRad * Mathf.Rad2Deg, 0f)
+                : Quaternion.Euler(0f, _platterRotationRad * Mathf.Rad2Deg, 0f);
+            float effectiveScale = _arBlend > 0.0001f ? _arPlatterScale : 1f;
+
+            if (_platterRoot != null)
+            {
+                _platterRoot.transform.SetPositionAndRotation(effectivePos, effectiveRot);
+                _platterRoot.transform.localScale = Vector3.one * effectiveScale;
+            }
+            if (_terrainColliderGo != null)
+            {
+                bool shouldEnableCollider = _arBlend <= 0.05f;
+                if (_terrainColliderGo.activeSelf != shouldEnableCollider)
+                {
+                    _terrainColliderGo.SetActive(shouldEnableCollider);
+                }
+            }
+            if (_terrainMaterial != null)
+            {
+                _terrainMaterial.SetMatrix(PropPlatterMatrix, Matrix4x4.TRS(effectivePos, effectiveRot, Vector3.one * effectiveScale));
+                _terrainMaterial.SetFloat(PropUArMode, _arBlend);
+                _terrainMaterial.SetFloat(PropUArOcclusionEnabled, _arOcclusionEnabled ? 1f : 0f);
+            }
+        }
+
+        public void SetVrOnlyEffectsHidden(bool hidden)
+        {
+            _vrEffectsHidden = hidden;
+            if (hidden)
+            {
+                if (_floatingBlocksRenderer != null) _floatingBlocksRenderer.enabled = false;
+                if (_meteorsRenderer != null) _meteorsRenderer.enabled = false;
+                if (_particlesRenderer != null) _particlesRenderer.enabled = false;
+            }
+        }
+
         // Ripples ring buffer
         private readonly Vector4[] _ripplePosTimeStrength = new Vector4[MAX_RIPPLES];
         private readonly Vector4[] _rippleState = new Vector4[MAX_RIPPLES];
@@ -216,6 +305,8 @@ namespace SonicTopography
         private static readonly int PropULiftOffset = Shader.PropertyToID("_uLiftOffset");
         private static readonly int PropUItemPosActive = Shader.PropertyToID("_uItemPosActive");
         private static readonly int PropUItemScale = Shader.PropertyToID("_uItemScale");
+        private static readonly int PropUArMode = Shader.PropertyToID("_uArMode");
+        private static readonly int PropUArOcclusionEnabled = Shader.PropertyToID("_uArOcclusionEnabled");
 
         private void Awake()
         {
@@ -650,7 +741,7 @@ namespace SonicTopography
         {
             if (action == TriggerActionType.Meteor)
             {
-                AddMeteor(strength);
+                if (!_vrEffectsHidden) AddMeteor(strength);
             }
             else if (action == TriggerActionType.Snare)
             {
@@ -779,13 +870,25 @@ namespace SonicTopography
 
             // Rotate visual platter
             _platterRotationRad += rotationSpeed * delta;
-            Quaternion platterRot = Quaternion.Euler(0f, _platterRotationRad * Mathf.Rad2Deg, 0f);
-            Matrix4x4 platterMatrix = Matrix4x4.TRS(platterWorldPosition, platterRot, Vector3.one);
+            Vector3 effectivePos = _arBlend > 0.0001f ? _arPlatterPos : platterWorldPosition;
+            Quaternion effectiveRot = _arBlend > 0.0001f
+                ? _arPlatterRot * Quaternion.Euler(0f, _platterRotationRad * Mathf.Rad2Deg, 0f)
+                : Quaternion.Euler(0f, _platterRotationRad * Mathf.Rad2Deg, 0f);
+            float effectiveScale = _arBlend > 0.0001f ? _arPlatterScale : 1f;
+            Matrix4x4 platterMatrix = Matrix4x4.TRS(effectivePos, effectiveRot, Vector3.one * effectiveScale);
 
             EnsurePlatterRoot();
-            _platterRoot.transform.position = platterWorldPosition;
-            _platterRoot.transform.rotation = platterRot;
-            _platterRoot.transform.localScale = Vector3.one;
+            _platterRoot.transform.position = effectivePos;
+            _platterRoot.transform.rotation = effectiveRot;
+            _platterRoot.transform.localScale = Vector3.one * effectiveScale;
+            if (_terrainColliderGo != null)
+            {
+                bool shouldEnableCollider = _arBlend <= 0.05f;
+                if (_terrainColliderGo.activeSelf != shouldEnableCollider)
+                {
+                    _terrainColliderGo.SetActive(shouldEnableCollider);
+                }
+            }
 
             // Handle VR / Desktop interaction (ripples & theme cycling)
             HandleUserInteractions(platterMatrix);
@@ -921,6 +1024,11 @@ namespace SonicTopography
             _terrainMaterial.SetFloat(PropUSpectralCentroid, data.spectralCentroid);
             _terrainMaterial.SetFloat(PropUEnergy, eqEnergy);
             _terrainMaterial.SetFloat(PropUAmplitude, amplitudeMultiplier);
+            _terrainMaterial.SetFloat(PropUArMode, _arBlend);
+            _terrainMaterial.SetFloat(PropUArOcclusionEnabled, _arOcclusionEnabled ? 1f : 0f);
+            LastAudioEnergy = eqEnergy;
+            LastBassEnergy = _smBass;
+            LastWarmth = uWarmth;
 
             for (int r = 0; r < MAX_RIPPLES; r++)
             {
@@ -949,7 +1057,7 @@ namespace SonicTopography
             }
 
             // Update & Toggle Floating Crystal Blocks MeshRenderer
-            bool showFloatingBlocks = groundEqSettings.floatingBlocksEnabled && _floatingBlocks != null && _floatingBlocks.Length > 0;
+            bool showFloatingBlocks = !_vrEffectsHidden && groundEqSettings.floatingBlocksEnabled && _floatingBlocks != null && _floatingBlocks.Length > 0;
             if (_floatingBlocksRenderer != null && _floatingBlocksRenderer.enabled != showFloatingBlocks)
             {
                 _floatingBlocksRenderer.enabled = showFloatingBlocks;
@@ -1028,8 +1136,9 @@ namespace SonicTopography
 
             if (_meteorsRenderer != null)
             {
-                _meteorsRenderer.enabled = anyMeteorActive;
-                if (anyMeteorActive)
+                bool showMeteors = !_vrEffectsHidden && anyMeteorActive;
+                _meteorsRenderer.enabled = showMeteors;
+                if (showMeteors)
                 {
                     _meteorMaterial.SetVectorArray(PropUItemPosActive, _meteorPosActive);
                     _meteorMaterial.SetVectorArray(PropUItemScale, _meteorScale);
@@ -1072,7 +1181,7 @@ namespace SonicTopography
                 }
             }
 
-            bool showParticles = enableAmbientParticles && anyParticleActive;
+            bool showParticles = !_vrEffectsHidden && enableAmbientParticles && anyParticleActive;
             if (_particlesRenderer != null)
             {
                 _particlesRenderer.enabled = showParticles;
@@ -1124,7 +1233,14 @@ namespace SonicTopography
             Vector4 backdropLinearVec = ComputeBackdropLinear(c.uFogColor);
             Color bgLinear = new Color(backdropLinearVec.x, backdropLinearVec.y, backdropLinearVec.z, 1f);
             Color bgSrgb = bgLinear.gamma;
-            bgSrgb.a = 1f;
+            if (SonicMixedRealityManager.IsArVisualActive || _arBlend > 0.001f)
+            {
+                bgSrgb = new Color(0f, 0f, 0f, 0f);
+            }
+            else
+            {
+                bgSrgb.a = 1f;
+            }
 
             if (RenderSettings.skybox != null)
             {
@@ -1288,7 +1404,7 @@ namespace SonicTopography
                 _wasThemeButtonPressed = themeKeyTriggered;
             }
 
-            if (!enableInteractiveRipples) return;
+            if (!enableInteractiveRipples || SonicMixedRealityManager.IsArControlActive) return;
 
             Matrix4x4 worldToPlatter = platterMatrix.inverse;
             Plane terrainPlane = new Plane(Vector3.up, new Vector3(0f, platterWorldPosition.y + 15.0f, 0f));

@@ -105,6 +105,9 @@ namespace SonicTopography
         private bool _webNativeIsPassword = false;
         private AndroidJavaObject _bridge;
         private IntPtr _attachSurfaceMethodId = IntPtr.Zero;
+        private bool _lastSentSpatialActive = false;
+        private Vector3 _lastSentSpatialPosL = Vector3.zero;
+        private float _nextSpatialPosePushTime = 0f;
 #endif
 
         public bool IsBrowserInitialized => _initialized;
@@ -540,6 +543,8 @@ namespace SonicTopography
                     _nextStatusPollTime = Time.unscaledTime + 0.12f;
                     PollStatusFromJava();
                 }
+
+                UpdateBrowserSpatialAudioPose();
             }
 #endif
 
@@ -592,25 +597,52 @@ namespace SonicTopography
 #if UNITY_ANDROID && !UNITY_EDITOR
         private void EnsureOVRManagerReady()
         {
-            if (OVRManager.instance == null)
+            SonicMixedRealityManager.EnsureSharedOVRManager();
+        }
+
+        private void UpdateBrowserSpatialAudioPose()
+        {
+            if (_bridge == null || !_initialized) return;
+
+            bool spatialActive = SonicMixedRealityManager.IsArVisualActive && IsBrowserAudioPlaying;
+            if (!spatialActive)
             {
-                OVRManager mgr = FindFirstObjectByType<OVRManager>(FindObjectsInactive.Include);
-                if (mgr == null)
+                if (_lastSentSpatialActive)
                 {
-                    mgr = gameObject.AddComponent<OVRManager>();
+                    _lastSentSpatialActive = false;
+                    _bridge.Call("setSpatialAudio", false, 0f, 0f, -1f, 0f, 0f, -1f, 1.2f);
                 }
-                if (mgr != null)
-                {
-                    mgr.enableDynamicResolution = false;
-                    mgr.isInsightPassthroughEnabled = false;
-                    mgr.resetTrackerOnLoad = false;
-                    mgr.launchSimultaneousHandsControllersOnStartup = false;
-                    // Leave trackingOriginType untouched: on OpenXR >= 1.11, setting Stage calls
-                    // OpenXRSettings.RefreshRecenterSpace() and shifts XROrigin away from (0,0,0).
-                }
+                return;
             }
 
-            SonicTopographyVRBootstrap.ConfigureXRPerformanceAndResolution();
+            if (Time.unscaledTime < _nextSpatialPosePushTime) return;
+            _nextSpatialPosePushTime = Time.unscaledTime + 0.04f; // ~25 Hz smooth Web Audio tracking
+
+            Camera cam = Camera.main;
+            if (cam == null || SonicMixedRealityManager.Instance == null) return;
+
+            SonicMixedRealityManager.Instance.GetCurrentTerrainPose(out Vector3 centerWS, out _, out _, out float worldRadius);
+            float stereoHalfWidth = Mathf.Clamp(worldRadius * 0.65f, 0.14f, 1.25f);
+            Vector3 stereoRight = cam.transform.right;
+
+            Vector3 worldL = centerWS - stereoRight * stereoHalfWidth;
+            Vector3 worldR = centerWS + stereoRight * stereoHalfWidth;
+
+            Vector3 localL = cam.transform.InverseTransformPoint(worldL);
+            Vector3 localR = cam.transform.InverseTransformPoint(worldR);
+            // Convert Unity camera space (+Z fwd) to Web Audio listener space (-Z fwd)
+            Vector3 webL = new Vector3(localL.x, localL.y, -localL.z);
+            Vector3 webR = new Vector3(localR.x, localR.y, -localR.z);
+
+            if (_lastSentSpatialActive && Vector3.SqrMagnitude(webL - _lastSentSpatialPosL) < 0.0004f)
+            {
+                return;
+            }
+
+            _lastSentSpatialActive = true;
+            _lastSentSpatialPosL = webL;
+            float refDist = Mathf.Max(0.85f, worldRadius * 1.4f);
+            _bridge.Call("setSpatialAudio", true, webL.x, webL.y, webL.z, webR.x, webR.y, webR.z, refDist);
         }
 
         private void CreateOverlayLayer()

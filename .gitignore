@@ -16,9 +16,14 @@
 !Packages/manifest.json
 !ProjectSettings/
 !ProjectSettings/ProjectVersion.txt
+!ProjectSettings/AudioManager.asset
+!ProjectSettings/TagManager.asset
 
-# Un-ignore Android Manifest & built-in GeckoView WebExtension
+# Un-ignore OpenXR Feature Settings & Audio Mixer
 !Assets/
+!Assets/XR/
+!Assets/XR/Settings/
+!Assets/XR/Settings/OpenXR Package Settings.asset
 !Assets/Plugins/
 !Assets/Plugins/Android/
 !Assets/Plugins/Android/AndroidManifest.xml
@@ -26,7 +31,7 @@
 !Assets/StreamingAssets/sonic_browser_ext/
 !Assets/StreamingAssets/sonic_browser_ext/**
 
-# Un-ignore all AudioFloor / SonicTopography C# scripts, Editor build tools, Java bridges & HLSL shaders
+# Un-ignore all AudioFloor / SonicTopography C# scripts, Editor build tools, Java bridges, Mixers & HLSL shaders
 !Assets/SonicTopography/
 !Assets/SonicTopography/Scripts/
 !Assets/SonicTopography/Scripts/*.cs
@@ -36,8 +41,11 @@
 !Assets/SonicTopography/Plugins/Android/
 !Assets/SonicTopography/Plugins/Android/*.java
 !Assets/SonicTopography/Resources/
+!Assets/SonicTopography/Resources/Audio/
+!Assets/SonicTopography/Resources/Audio/SonicSpatialAudioMixer.mixer
 !Assets/SonicTopography/Resources/Shaders/
 !Assets/SonicTopography/Resources/Shaders/*.shader
+!Assets/SonicTopography/Resources/Shaders/*.hlsl
 
 # Always ignore Unity .meta files and OS temp files anywhere
 **/*.meta

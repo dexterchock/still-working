@@ -31,6 +31,7 @@ Shader "SonicTopography/FloatingBlocks"
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "SonicArDissolveCommon.hlsl"
 
             float _uTime;
             float _uPulse;
@@ -76,6 +77,7 @@ Shader "SonicTopography/FloatingBlocks"
                 float  brillianceSpark : TEXCOORD3;
                 float3 baseFaceColor   : TEXCOORD4;
                 float3 edgeGlowColor   : TEXCOORD5;
+                float3 worldPos        : TEXCOORD6;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -161,6 +163,7 @@ Shader "SonicTopography/FloatingBlocks"
                 output.distance = length(platterPos.xz);
                 VertexPositionInputs posInputs = GetVertexPositionInputs(platterPos);
                 output.positionCS = posInputs.positionCS;
+                output.worldPos = posInputs.positionWS;
 
                 // Precompute per-block lighting & color constants in vertex shader
                 float normElevation = saturate(elevation / 8.0);
@@ -240,6 +243,8 @@ Shader "SonicTopography/FloatingBlocks"
 
                 float voidFade = preFade * preFade;
                 finalColor = lerp(_uBackdropLinear.rgb, finalColor, voidFade);
+
+                ApplySonicArDissolveOpaque(input.worldPos, finalColor);
 
                 return half4(finalColor, 1.0);
             }

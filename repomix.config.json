@@ -11,6 +11,9 @@
     ".agent-docs/**",
     "Packages/manifest.json",
     "ProjectSettings/ProjectVersion.txt",
+    "ProjectSettings/AudioManager.asset",
+    "ProjectSettings/TagManager.asset",
+    "Assets/XR/Settings/OpenXR Package Settings.asset",
     "Assets/Plugins/Android/AndroidManifest.xml",
     "Assets/StreamingAssets/sonic_browser_ext/**",
     "Assets/SonicTopography/**"

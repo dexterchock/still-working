@@ -533,6 +533,11 @@ namespace SonicTopography
         private SonicMusicLibraryManager _library;
         private SonicMusicPlayerController _player;
         private SonicWebBrowserManager _browserManager;
+        private SonicMixedRealityManager _mrManager;
+
+        // Right-Side VR / AR Mode Switch Pill widgets
+        private readonly Image[] _modeSwitchBgs = new Image[2];
+        private readonly TextMeshProUGUI[] _modeSwitchLabels = new TextMeshProUGUI[2];
 
         // Spatial Canvas & Animation state
         private GameObject _canvasObject;
@@ -596,6 +601,13 @@ namespace SonicTopography
         private Slider _rotationSlider;
         private Slider _amplitudeSlider;
         private Slider _motionSpeedSlider;
+        private Slider _roomGlowSlider;
+        private RectTransform _rotationRowRect;
+        private RectTransform _amplitudeRowRect;
+        private RectTransform _motionSpeedRowRect;
+        private RectTransform _roomGlowRowRect;
+        private readonly List<GameObject> _vrOnlyToggleRoots = new List<GameObject>();
+        private readonly List<GameObject> _arOnlyToggleRoots = new List<GameObject>();
 
         private readonly Image[] _colorModeBtnBgs = new Image[3];
         private readonly TextMeshProUGUI[] _colorModeBtnLabels = new TextMeshProUGUI[3];
@@ -756,6 +768,34 @@ namespace SonicTopography
             SetUIVisibleImmediate(false);
         }
 
+        public void BindMixedRealityManager(SonicMixedRealityManager mr)
+        {
+            if (_mrManager != null)
+            {
+                _mrManager.OnModeChanged -= HandleMrModeChanged;
+                _mrManager.OnArSettingsChanged -= HandleArSettingsChanged;
+            }
+            _mrManager = mr;
+            if (_mrManager != null)
+            {
+                _mrManager.OnModeChanged += HandleMrModeChanged;
+                _mrManager.OnArSettingsChanged += HandleArSettingsChanged;
+            }
+            RefreshModeSwitchPill();
+            RefreshSettingsUI();
+        }
+
+        private void HandleMrModeChanged(SonicExperienceMode _)
+        {
+            RefreshModeSwitchPill();
+            RefreshSettingsUI();
+        }
+
+        private void HandleArSettingsChanged()
+        {
+            RefreshSettingsUI();
+        }
+
         private void OnDestroy()
         {
             if (_library != null) _library.OnLibraryUpdated -= HandleLibraryUpdated;
@@ -768,6 +808,11 @@ namespace SonicTopography
             if (_browserManager != null)
             {
                 _browserManager.OnBrowserStateChanged -= HandleBrowserStateChanged;
+            }
+            if (_mrManager != null)
+            {
+                _mrManager.OnModeChanged -= HandleMrModeChanged;
+                _mrManager.OnArSettingsChanged -= HandleArSettingsChanged;
             }
             if (_glassMaterial != null) Destroy(_glassMaterial);
 
@@ -1502,10 +1547,13 @@ namespace SonicTopography
             if (cam == null || _canvasRect == null) return;
 
             Vector3 headPos = cam.transform.position;
-            float currentGround = (headPos.y < -5f) ? -11.0f : 0f;
-            if (headPos.y < currentGround + 0.5f)
+            if (!SonicMixedRealityManager.IsArControlActive)
             {
-                headPos.y = currentGround + 1.35f;
+                float currentGround = (headPos.y < -5f) ? -11.0f : 0f;
+                if (headPos.y < currentGround + 0.5f)
+                {
+                    headPos.y = currentGround + 1.35f;
+                }
             }
             Vector3 flatForward = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up);
             if (flatForward.sqrMagnitude < 0.001f)
@@ -1656,7 +1704,7 @@ namespace SonicTopography
             _rootCanvasGroup.blocksRaycasts = false;
 
             _canvasRect = _canvasObject.GetComponent<RectTransform>();
-            _canvasRect.sizeDelta = new Vector2(1260f, 780f);
+            _canvasRect.sizeDelta = new Vector2(1316f, 780f);
             _baseCanvasScale = Vector3.one * canvasWorldScale;
             _canvasRect.localScale = _baseCanvasScale;
 
@@ -1666,10 +1714,90 @@ namespace SonicTopography
             // 2. Central Floating Glass Window (Frosted Backdrop-Blur Glass)
             BuildCentralMainWindow(_canvasRect);
 
-            // 3. Bottom Persistent Player Bar Ornament (Frosted Backdrop-Blur Glass)
+            // 3. Right-Side Mirror VR / AR Switch Pill (Frosted Backdrop-Blur Glass)
+            BuildRightModeSwitchPill(_canvasRect);
+
+            // 4. Bottom Persistent Player Bar Ornament (Frosted Backdrop-Blur Glass)
             BuildBottomPlayerBar(_canvasRect);
 
             SwitchSection(SonicUISection.Music);
+        }
+
+        private void BuildRightModeSwitchPill(RectTransform parent)
+        {
+            RectTransform pillRect = CreateRect("RightModeSwitchPill", parent, new Vector2(568f, 52f), new Vector2(80f, 156f));
+            AddGlassSurface(pillRect.gameObject, Color.white, 40f, isPill: true, border: 0.18f, SonicSurfaceMode.FrostedBlurWindow);
+
+            string[] btnNames = { "ModeVrBtn", "ModeArBtn" };
+            string[] btnTexts = { "VR", "AR" };
+            float[] yOffsets = { 34f, -34f };
+
+            for (int i = 0; i < 2; i++)
+            {
+                SonicExperienceMode targetMode = i == 0 ? SonicExperienceMode.VR : SonicExperienceMode.AR;
+                RectTransform btnRect = CreateRect(btnNames[i], pillRect, new Vector2(0f, yOffsets[i]), new Vector2(56f, 56f));
+
+                Image btnBg = AddGlassSurface(btnRect.gameObject, ColPillIdle, 28f, isPill: true, border: 0.08f);
+                _modeSwitchBgs[i] = btnBg;
+
+                Button btn = btnRect.gameObject.AddComponent<Button>();
+                ConfigureVisionButtonColors(btn, btnBg);
+                btn.onClick.AddListener(() =>
+                {
+                    SonicMixedRealityManager mr = _mrManager != null ? _mrManager : SonicMixedRealityManager.Instance;
+                    mr?.SetMode(targetMode);
+                });
+
+                TextMeshProUGUI lbl = CreateLabel("Label", btnRect, btnTexts[i], 16f, FontStyles.Bold, TextAlignmentOptions.Center);
+                lbl.color = ColTextSecondary;
+                StretchFull(lbl.rectTransform);
+                _modeSwitchLabels[i] = lbl;
+
+                SonicVisionHoverEffect hover = AddHoverHighlight(btnRect.gameObject, btnBg, null, ColPillIdle, 0.08f, 0.22f);
+                if (hover != null)
+                {
+                    hover.targetLabel = lbl;
+                    hover.normalLabelColor = ColTextSecondary;
+                    hover.hoverLabelColor = Color.white;
+                }
+            }
+
+            RefreshModeSwitchPill();
+        }
+
+        private void RefreshModeSwitchPill()
+        {
+            bool isAr = _mrManager != null && _mrManager.IsArMode;
+            int activeIdx = isAr ? 1 : 0;
+
+            for (int i = 0; i < 2; i++)
+            {
+                bool active = i == activeIdx;
+                Image bg = _modeSwitchBgs[i];
+                TextMeshProUGUI lbl = _modeSwitchLabels[i];
+
+                if (bg != null)
+                {
+                    Color bgCol = active ? ColPillActive : ColPillIdle;
+                    bg.color = bgCol;
+                    SonicVisionHoverEffect hover = bg.GetComponent<SonicVisionHoverEffect>();
+                    if (hover != null)
+                    {
+                        hover.normalLabelColor = active ? Color.white : ColTextSecondary;
+                        hover.hoverLabelColor = Color.white;
+                        hover.SetNormalState(bgCol, active ? 0.38f : 0.08f);
+                    }
+                    else
+                    {
+                        SonicGlassSurface surf = bg.GetComponent<SonicGlassSurface>();
+                        if (surf != null) surf.SetBorder(active ? 0.38f : 0.08f);
+                    }
+                }
+                if (lbl != null)
+                {
+                    lbl.color = active ? Color.white : ColTextSecondary;
+                }
+            }
         }
 
         private void BuildLeftNavigationPill(RectTransform parent)
@@ -2436,6 +2564,10 @@ namespace SonicTopography
                 {
                     _visualizer.ResetMotionToDefaults();
                 }
+                if (_mrManager != null)
+                {
+                    _mrManager.RoomGlow = SonicMixedRealityManager.DefaultRoomGlow;
+                }
                 RefreshSettingsUI();
             });
             AddHoverHighlight(resetMotionBtnRect.gameObject, resetMotionBg, null, ColPillIdle, 0.10f, 0.24f);
@@ -2455,6 +2587,7 @@ namespace SonicTopography
                     PlayerPrefs.SetFloat("SonicTopography_MotionRotation", val);
                     PlayerPrefs.Save();
                 });
+            _rotationRowRect = _rotationSlider != null ? _rotationSlider.transform.parent as RectTransform : null;
 
             _amplitudeSlider = CreateLabeledSliderRow(
                 leftPanel,
@@ -2469,6 +2602,7 @@ namespace SonicTopography
                     PlayerPrefs.SetFloat("SonicTopography_MotionElevation", val);
                     PlayerPrefs.Save();
                 });
+            _amplitudeRowRect = _amplitudeSlider != null ? _amplitudeSlider.transform.parent as RectTransform : null;
 
             _motionSpeedSlider = CreateLabeledSliderRow(
                 leftPanel,
@@ -2483,6 +2617,22 @@ namespace SonicTopography
                     PlayerPrefs.SetFloat("SonicTopography_MotionSpeed", val);
                     PlayerPrefs.Save();
                 });
+            _motionSpeedRowRect = _motionSpeedSlider != null ? _motionSpeedSlider.transform.parent as RectTransform : null;
+
+            _roomGlowSlider = CreateLabeledSliderRow(
+                leftPanel,
+                new Vector2(0f, -8f),
+                "Room Glow",
+                0f,
+                2.0f,
+                SonicMixedRealityManager.DefaultRoomGlow,
+                val =>
+                {
+                    SonicMixedRealityManager mr = _mrManager != null ? _mrManager : SonicMixedRealityManager.Instance;
+                    if (mr != null) mr.RoomGlow = val;
+                });
+            _roomGlowRowRect = _roomGlowSlider != null ? _roomGlowSlider.transform.parent as RectTransform : null;
+            if (_roomGlowRowRect != null) _roomGlowRowRect.gameObject.SetActive(false);
 
             // Subtle Section Divider
             CreateDividerLine(leftPanel, new Vector2(0f, -26f), 394f);
@@ -2493,14 +2643,27 @@ namespace SonicTopography
             SetRectAnchored(fxHeaderLbl.rectTransform, new Vector2(-102f, -50f), new Vector2(190f, 22f), new Vector2(0.5f, 0.5f));
 
             _effectToggles.Clear();
-            CreateEffectToggleItem(leftPanel, new Vector2(-98f, -86f), "Floating Blocks",
+            _vrOnlyToggleRoots.Clear();
+            _arOnlyToggleRoots.Clear();
+
+            _vrOnlyToggleRoots.Add(CreateEffectToggleItem(leftPanel, new Vector2(-98f, -86f), "Floating Blocks",
                 () => _visualizer == null || _visualizer.groundEqSettings.floatingBlocksEnabled,
                 v =>
                 {
                     if (_visualizer != null) _visualizer.groundEqSettings.floatingBlocksEnabled = v;
                     PlayerPrefs.SetInt("SonicTopography_FxFloatingBlocks", v ? 1 : 0);
                     PlayerPrefs.Save();
+                }));
+
+            GameObject arRoomLight = CreateEffectToggleItem(leftPanel, new Vector2(-98f, -86f), "Room Light",
+                () => (_mrManager != null ? _mrManager : SonicMixedRealityManager.Instance)?.RoomLightEnabled ?? true,
+                v =>
+                {
+                    SonicMixedRealityManager mr = _mrManager != null ? _mrManager : SonicMixedRealityManager.Instance;
+                    if (mr != null) mr.RoomLightEnabled = v;
                 });
+            arRoomLight.SetActive(false);
+            _arOnlyToggleRoots.Add(arRoomLight);
 
             CreateEffectToggleItem(leftPanel, new Vector2(98f, -86f), "Kick Pulse",
                 () => _audioEngine == null || _audioEngine.pulseTrigger.enabled,
@@ -2520,23 +2683,43 @@ namespace SonicTopography
                     PlayerPrefs.Save();
                 });
 
-            CreateEffectToggleItem(leftPanel, new Vector2(98f, -130f), "Meteors",
+            _vrOnlyToggleRoots.Add(CreateEffectToggleItem(leftPanel, new Vector2(98f, -130f), "Meteors",
                 () => _audioEngine == null || _audioEngine.meteorTrigger.enabled,
                 v =>
                 {
                     if (_audioEngine != null) _audioEngine.meteorTrigger.enabled = v;
                     PlayerPrefs.SetInt("SonicTopography_FxMeteors", v ? 1 : 0);
                     PlayerPrefs.Save();
-                });
+                }));
 
-            CreateEffectToggleItem(leftPanel, new Vector2(-98f, -174f), "Ambient Dust",
+            GameObject arRealOcclusion = CreateEffectToggleItem(leftPanel, new Vector2(98f, -130f), "Real Occlusion",
+                () => (_mrManager != null ? _mrManager : SonicMixedRealityManager.Instance)?.RealOcclusionEnabled ?? true,
+                v =>
+                {
+                    SonicMixedRealityManager mr = _mrManager != null ? _mrManager : SonicMixedRealityManager.Instance;
+                    if (mr != null) mr.RealOcclusionEnabled = v;
+                });
+            arRealOcclusion.SetActive(false);
+            _arOnlyToggleRoots.Add(arRealOcclusion);
+
+            _vrOnlyToggleRoots.Add(CreateEffectToggleItem(leftPanel, new Vector2(-98f, -174f), "Ambient Dust",
                 () => _visualizer == null || _visualizer.enableAmbientParticles,
                 v =>
                 {
                     if (_visualizer != null) _visualizer.enableAmbientParticles = v;
                     PlayerPrefs.SetInt("SonicTopography_FxAmbientDust", v ? 1 : 0);
                     PlayerPrefs.Save();
+                }));
+
+            GameObject arSurfaceSnap = CreateEffectToggleItem(leftPanel, new Vector2(-98f, -174f), "Surface Snap",
+                () => (_mrManager != null ? _mrManager : SonicMixedRealityManager.Instance)?.SurfaceSnapEnabled ?? true,
+                v =>
+                {
+                    SonicMixedRealityManager mr = _mrManager != null ? _mrManager : SonicMixedRealityManager.Instance;
+                    if (mr != null) mr.SurfaceSnapEnabled = v;
                 });
+            arSurfaceSnap.SetActive(false);
+            _arOnlyToggleRoots.Add(arSurfaceSnap);
 
             CreateEffectToggleItem(leftPanel, new Vector2(98f, -174f), "Ray Ripples",
                 () => _visualizer == null || _visualizer.enableInteractiveRipples,
@@ -2771,12 +2954,28 @@ namespace SonicTopography
                 }
             }
 
+            bool isAr = (_mrManager != null ? _mrManager : SonicMixedRealityManager.Instance)?.IsArMode ?? false;
+
+            if (_rotationRowRect != null) _rotationRowRect.anchoredPosition = new Vector2(0f, isAr ? 82f : 76f);
+            if (_amplitudeRowRect != null) _amplitudeRowRect.anchoredPosition = new Vector2(0f, isAr ? 52f : 38f);
+            if (_motionSpeedRowRect != null) _motionSpeedRowRect.anchoredPosition = new Vector2(0f, isAr ? 22f : 0f);
+            if (_roomGlowRowRect != null)
+            {
+                _roomGlowRowRect.anchoredPosition = new Vector2(0f, -8f);
+                _roomGlowRowRect.gameObject.SetActive(isAr);
+            }
+
             if (_visualizer != null)
             {
                 _suppressSliderCallbacks = true;
                 if (_rotationSlider != null) _rotationSlider.value = _visualizer.rotationSpeed;
                 if (_amplitudeSlider != null) _amplitudeSlider.value = _visualizer.groundEqSettings.amplitude;
                 if (_motionSpeedSlider != null) _motionSpeedSlider.value = _visualizer.groundEqSettings.motionSpeed;
+                if (_roomGlowSlider != null)
+                {
+                    SonicMixedRealityManager mr = _mrManager != null ? _mrManager : SonicMixedRealityManager.Instance;
+                    _roomGlowSlider.value = mr != null ? mr.RoomGlow : SonicMixedRealityManager.DefaultRoomGlow;
+                }
                 _suppressSliderCallbacks = false;
 
                 int activeMode = (int)_visualizer.colorMode;
@@ -2882,10 +3081,27 @@ namespace SonicTopography
                 }
             }
 
+            for (int i = 0; i < _vrOnlyToggleRoots.Count; i++)
+            {
+                if (_vrOnlyToggleRoots[i] != null && _vrOnlyToggleRoots[i].activeSelf == isAr)
+                {
+                    _vrOnlyToggleRoots[i].SetActive(!isAr);
+                }
+            }
+            for (int i = 0; i < _arOnlyToggleRoots.Count; i++)
+            {
+                if (_arOnlyToggleRoots[i] != null && _arOnlyToggleRoots[i].activeSelf != isAr)
+                {
+                    _arOnlyToggleRoots[i].SetActive(isAr);
+                }
+            }
+
             for (int i = 0; i < _effectToggles.Count; i++)
             {
                 UpdateEffectToggleVisual(_effectToggles[i]);
             }
+
+            RefreshModeSwitchPill();
         }
 
         // =====================================================================
@@ -3871,7 +4087,7 @@ namespace SonicTopography
                 onValueChanged: h => onHueChanged?.Invoke(h));
         }
 
-        private void CreateEffectToggleItem(
+        private GameObject CreateEffectToggleItem(
             RectTransform parent,
             Vector2 pos,
             string label,
@@ -3917,6 +4133,7 @@ namespace SonicTopography
             });
 
             UpdateEffectToggleVisual(binding);
+            return itemRect.gameObject;
         }
 
         private static void UpdateEffectToggleVisual(EffectToggleBinding b)

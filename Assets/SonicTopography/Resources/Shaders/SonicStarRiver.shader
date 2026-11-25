@@ -42,6 +42,7 @@ Shader "SonicTopography/StarRiver"
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "SonicArDissolveCommon.hlsl"
 
             #ifndef PI
             #define PI 3.14159265359
@@ -144,6 +145,7 @@ Shader "SonicTopography/StarRiver"
                 float2 uv : TEXCOORD0;         // quad local coordinates [-1, 1]
                 float4 color : COLOR;          // rgb = star color, a = alpha
                 float bloom : TEXCOORD1;       // bloom halo strength
+                float3 worldPos : TEXCOORD2;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -250,6 +252,7 @@ Shader "SonicTopography/StarRiver"
                 output.uv = input.uv2.xy;
                 output.color = float4(vColor, vAlpha * _OverallAlpha);
                 output.bloom = vBloomStrength;
+                output.worldPos = worldPos;
 
                 return output;
             }
@@ -270,6 +273,11 @@ Shader "SonicTopography/StarRiver"
                 float intensity = core * 1.6 + bloom * 0.42;
                 float alpha = intensity * input.color.a;
                 float3 finalRgb = input.color.rgb * alpha;
+
+                float3 ringGlow;
+                float keep = EvaluateSonicArDissolve(input.worldPos, ringGlow);
+                finalRgb = finalRgb * keep + ringGlow * alpha;
+                alpha *= keep;
 
                 return float4(finalRgb, alpha);
             }

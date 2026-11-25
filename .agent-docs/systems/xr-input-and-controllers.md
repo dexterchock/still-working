@@ -1,11 +1,12 @@
 # XR Input & Controllers System
 
-Last updated: 2026-11-22
+Last updated: 2026-11-26
 
 ## Key Scripts & Prefabs
-- `Assets/SonicTopography/Scripts/SonicTopographyVRBootstrap.cs`: Bootstraps 72 Hz / `1.5x` URP+XR scaling, OVR/OpenXR performance levels (`SustainedHigh` CPU/GPU), XRI interaction layer hygiene, focus/keyboard guards, and splash-to-UI reveal.
-- `Assets/SonicTopography/Scripts/SonicMetaQuestController.cs`: Drives left/right Meta Quest Touch Plus visuals (`Assets/SonicTopography/Resources/Controllers/`).
-- `Assets/SonicTopography/Scripts/AudioFloorControllerActions.cs`: Maps Touch controller actions (`A` jump, `B` play/pause, `X` next, `Y` previous, `Grip` cycle theme), enforces floor height locking (`LockVerticalOriginToGround`), and suppresses accidental jump on focus/keyboard transitions.
+- `Assets/SonicTopography/Scripts/SonicTopographyVRBootstrap.cs`: Bootstraps 72 Hz / `1.5x` URP+XR scaling, OVR/OpenXR performance levels (`SustainedHigh` CPU/GPU), XRI interaction layer hygiene, focus/keyboard guards, splash-to-UI reveal, and initializes `SonicMixedRealityManager`, `SonicArKeychainController`, and `SonicArTerrainManipulator`.
+- `Assets/SonicTopography/Scripts/SonicMetaQuestController.cs`: Drives left/right Meta Quest Touch Plus visuals (`Assets/SonicTopography/Resources/Controllers/`); hides controller 3D meshes in AR (`HideControllerModelsInAr = true`) while keeping pointer ray trimming.
+- `Assets/SonicTopography/Scripts/AudioFloorControllerActions.cs`: Maps Touch controller actions (`A` jump, `B` play/pause, `X` next, `Y` previous, `Grip` cycle theme), enforces floor height locking (`LockVerticalOriginToGround`), suppresses Jump/`CycleTheme`/XRI locomotion/floor-lock in AR mode (`RecenterUserOntoGlassStage()` on AR -> VR), and guards focus/keyboard transitions.
+- `Assets/SonicTopography/Scripts/SonicArTerrainManipulator.cs`: Handles 1-hand Grip/Pinch drag + magnetic surface snap (`TABLE`/`COUCH`/`FLOOR`/`WALL_FACE`, depth raycast fallback), 2-hand uniform scaling (`0.28m..3.60m`), and Trigger tap / fingertip poke ripples in AR.
 - See [Touch Plus Controllers Prefabs](../prefabs/controllers.md) for prefab/material details and [Visuals & Spatial UI](visuals-and-ui.md) for `SonicQuestVirtualKeyboardOpener`.
 
 ## Verified Invariants & Past Bug Fixes

@@ -31,6 +31,7 @@ Shader "SonicTopography/SimpleInstanced"
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "SonicArDissolveCommon.hlsl"
 
             float4 _BaseColor;
             float4x4 _PlatterMatrix;
@@ -47,6 +48,7 @@ Shader "SonicTopography/SimpleInstanced"
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
+                float3 worldPos   : TEXCOORD0;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -63,6 +65,7 @@ Shader "SonicTopography/SimpleInstanced"
                 if (posActive.w < 0.5)
                 {
                     output.positionCS = float4(0.0, 0.0, 0.0, 0.0);
+                    output.worldPos = float3(0.0, 0.0, 0.0);
                     return output;
                 }
 
@@ -70,6 +73,7 @@ Shader "SonicTopography/SimpleInstanced"
                 float3 platterPos = posActive.xyz + input.positionOS.xyz * scaleXYZ;
                 VertexPositionInputs posInputs = GetVertexPositionInputs(platterPos);
                 output.positionCS = posInputs.positionCS;
+                output.worldPos = posInputs.positionWS;
                 return output;
             }
 
@@ -77,7 +81,9 @@ Shader "SonicTopography/SimpleInstanced"
             {
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-                return half4(_BaseColor);
+                float3 ringGlow;
+                float keep = EvaluateSonicArDissolve(input.worldPos, ringGlow);
+                return half4(_BaseColor.rgb * keep + ringGlow, _BaseColor.a * keep);
             }
             ENDHLSL
         }

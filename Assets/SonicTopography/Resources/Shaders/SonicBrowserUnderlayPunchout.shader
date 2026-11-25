@@ -76,6 +76,7 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
 
             float4 _ClipRect;
             float _BorderInset;
+            float _SonicArModeGlobal;
 
             float sdRoundedBox(float2 p, float2 b, float r)
             {
@@ -121,8 +122,11 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
                 float aa = clamp(fwidth(dist), 0.35, 1.6);
                 float innerDist = dist + _BorderInset;
                 half keep = (half)smoothstep(-aa * 0.55, aa * 0.55, innerDist);
+                half3 arCornerBezel = half3(0.055h, 0.065h, 0.085h);
+                half3 cornerRgb = lerp(half3(0.0h, 0.0h, 0.0h), arCornerBezel, (half)saturate(_SonicArModeGlobal));
+                half cornerAlpha = keep * (half)lerp(1.0, 0.94, saturate(_SonicArModeGlobal));
 
-                return half4(0.0h, 0.0h, 0.0h, keep);
+                return half4(cornerRgb * keep, cornerAlpha);
             }
             ENDHLSL
         }

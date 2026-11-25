@@ -1,13 +1,13 @@
 # Project Overview
 
-Last updated: 2026-11-22
+Last updated: 2026-11-26
 
 ## Identity & Store Baseline
 - **App Name**: `AudioFloor` (`Dexter Chock`)
 - **Package ID**: `com.Dexter.AudioFloor`
 - **Meta App ID**: `1822201432331484`
 - **Unity Version**: `6000.3.26f1` (`de8167e7440c`)
-- **Released Store Build**: `v1.0` (`versionCode=2`, Build `1826148581936769`, `Builds/AudioFloor.apk`)
+- **Released Store Build**: `v1.1` (`versionCode=3`, Build `1838308090720818`, `Builds/AudioFloor.apk`)
 - **Verified Test Device**: Meta Quest 3 (`2G0YC28F6Z003Z`, Android OS 14 / API 34)
 
 ## Target Platform & Build Settings
@@ -21,7 +21,7 @@ Last updated: 2026-11-22
 
 ## Key Packages (`Packages/manifest.json`)
 - **Rendering**: `com.unity.render-pipelines.universal` `17.3.0` (`Performance` & `Quality` URP configs locked to `renderScale=1.5`, no HDR/shadows/opaque/depth textures).
-- **Meta XR**: `com.meta.xr.sdk.core` `207.0.1` (embedded in `Packages/com.meta.xr.sdk.core/`) for OVR performance hints, Touch Plus FBX/anim assets, and manifest/project validation.
+- **Meta XR**: `com.meta.xr.sdk.core` `207.0.1` (embedded in `Packages/com.meta.xr.sdk.core/`) for OVR performance hints, Passthrough, Environment Depth, Touch Plus FBX/anim assets, and manifest/project validation; `com.meta.xr.mrutilitykit` `207.0.1` for scanned room `EffectMesh`, surface anchors, and `EnvironmentRaycastManager`; `com.meta.xr.sdk.audio` `209.0.0` (`SonicSpatialAudioMixer.mixer`, `ProjectSettings/AudioManager.asset` = `Meta XR Audio`) for volumetric spatial acoustics in AR.
 - **Unity XR**: `com.unity.xr.openxr` `1.17.1`, `com.unity.xr.meta-openxr` `2.5.1`, `com.unity.xr.interaction.toolkit` `3.5.1`, `com.unity.xr.hands` `1.8.1`, `com.unity.inputsystem` `1.20.0`.
 - **Tooling**: `com.coplaydev.unity-mcp` (Unity Editor MCP bridge).
 

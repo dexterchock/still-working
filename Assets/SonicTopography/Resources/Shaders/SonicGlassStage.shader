@@ -38,6 +38,7 @@ Shader "SonicTopography/GlassStage"
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "SonicArDissolveCommon.hlsl"
 
             CBUFFER_START(UnityPerMaterial)
                 float4 _TintColor;
@@ -200,6 +201,10 @@ Shader "SonicTopography/GlassStage"
                     finalRgb = lerp(finalRgb, bezelRgb, bezelMask);
                     finalAlpha = lerp(finalAlpha, 1.0, bezelMask);
 
+                    float3 ringGlow;
+                    float keep = EvaluateSonicArDissolve(input.positionWS, ringGlow);
+                    finalRgb = finalRgb * keep + ringGlow;
+                    finalAlpha *= keep;
                     return half4(finalRgb, finalAlpha);
                 }
 
@@ -222,6 +227,10 @@ Shader "SonicTopography/GlassStage"
                     float3 sideRgb = lerp(sideChassis, fadedColor, sideLed * 0.75);
                     float sideAlpha = lerp(0.85, 0.95, sideLed * 0.5);
 
+                    float3 ringGlow;
+                    float keep = EvaluateSonicArDissolve(input.positionWS, ringGlow);
+                    sideRgb = sideRgb * keep + ringGlow;
+                    sideAlpha *= keep;
                     return half4(sideRgb, sideAlpha);
                 }
 
@@ -229,7 +238,9 @@ Shader "SonicTopography/GlassStage"
                 // 3. FALLBACK
                 // =========================================================================
                 float3 bottomRgb = _BezelColor.rgb * 0.70;
-                return half4(bottomRgb, 0.65);
+                float3 bottomRingGlow;
+                float bottomKeep = EvaluateSonicArDissolve(input.positionWS, bottomRingGlow);
+                return half4(bottomRgb * bottomKeep + bottomRingGlow, 0.65 * bottomKeep);
             }
             ENDHLSL
         }
@@ -251,6 +262,7 @@ Shader "SonicTopography/GlassStage"
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "SonicArDissolveCommon.hlsl"
 
             CBUFFER_START(UnityPerMaterial)
                 float4 _TintColor;
@@ -412,6 +424,10 @@ Shader "SonicTopography/GlassStage"
                     finalRgb = lerp(finalRgb, bezelRgb, bezelMask);
                     finalAlpha = lerp(finalAlpha, 1.0, bezelMask);
 
+                    float3 ringGlow;
+                    float keep = EvaluateSonicArDissolve(input.positionWS, ringGlow);
+                    finalRgb = finalRgb * keep + ringGlow;
+                    finalAlpha *= keep;
                     return half4(finalRgb, finalAlpha);
                 }
 
@@ -434,6 +450,10 @@ Shader "SonicTopography/GlassStage"
                     float3 sideRgb = lerp(sideChassis, fadedColor, sideLed * 0.75);
                     float sideAlpha = lerp(0.85, 0.95, sideLed * 0.5);
 
+                    float3 ringGlow;
+                    float keep = EvaluateSonicArDissolve(input.positionWS, ringGlow);
+                    sideRgb = sideRgb * keep + ringGlow;
+                    sideAlpha *= keep;
                     return half4(sideRgb, sideAlpha);
                 }
 
@@ -441,7 +461,9 @@ Shader "SonicTopography/GlassStage"
                 // 3. FALLBACK
                 // =========================================================================
                 float3 bottomRgb = _BezelColor.rgb * 0.70;
-                return half4(bottomRgb, 0.65);
+                float3 bottomRingGlow;
+                float bottomKeep = EvaluateSonicArDissolve(input.positionWS, bottomRingGlow);
+                return half4(bottomRgb * bottomKeep + bottomRingGlow, 0.65 * bottomKeep);
             }
             ENDHLSL
         }
@@ -463,6 +485,7 @@ Shader "SonicTopography/GlassStage"
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "SonicArDissolveCommon.hlsl"
 
             CBUFFER_START(UnityPerMaterial)
                 float4 _TintColor;
@@ -624,6 +647,10 @@ Shader "SonicTopography/GlassStage"
                     finalRgb = lerp(finalRgb, bezelRgb, bezelMask);
                     finalAlpha = lerp(finalAlpha, 1.0, bezelMask);
 
+                    float3 ringGlow;
+                    float keep = EvaluateSonicArDissolve(input.positionWS, ringGlow);
+                    finalRgb = finalRgb * keep + ringGlow;
+                    finalAlpha *= keep;
                     return half4(finalRgb, finalAlpha);
                 }
 
@@ -646,6 +673,10 @@ Shader "SonicTopography/GlassStage"
                     float3 sideRgb = lerp(sideChassis, fadedColor, sideLed * 0.75);
                     float sideAlpha = lerp(0.85, 0.95, sideLed * 0.5);
 
+                    float3 ringGlow;
+                    float keep = EvaluateSonicArDissolve(input.positionWS, ringGlow);
+                    sideRgb = sideRgb * keep + ringGlow;
+                    sideAlpha *= keep;
                     return half4(sideRgb, sideAlpha);
                 }
 
@@ -653,7 +684,9 @@ Shader "SonicTopography/GlassStage"
                 // 3. FALLBACK
                 // =========================================================================
                 float3 bottomRgb = _BezelColor.rgb * 0.70;
-                return half4(bottomRgb, 0.65);
+                float3 bottomRingGlow;
+                float bottomKeep = EvaluateSonicArDissolve(input.positionWS, bottomRingGlow);
+                return half4(bottomRgb * bottomKeep + bottomRingGlow, 0.65 * bottomKeep);
             }
             ENDHLSL
         }

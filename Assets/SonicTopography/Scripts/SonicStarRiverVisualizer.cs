@@ -40,6 +40,7 @@ namespace SonicTopography
         // Child GameObjects
         private GameObject _waveObject;
         private GameObject _ambientObject;
+        private bool _arHidden = false;
 
         // Realtime animation state
         private float _starTime = 0f;
@@ -379,8 +380,22 @@ namespace SonicTopography
             return mesh;
         }
 
+        public void SetArHidden(bool hidden)
+        {
+            _arHidden = hidden;
+            if (_waveObject != null && _waveObject.activeSelf == hidden) _waveObject.SetActive(!hidden);
+            if (_ambientObject != null && _ambientObject.activeSelf == hidden) _ambientObject.SetActive(!hidden);
+        }
+
         private void Update()
         {
+            if (_arHidden)
+            {
+                if (_waveObject != null && _waveObject.activeSelf) _waveObject.SetActive(false);
+                if (_ambientObject != null && _ambientObject.activeSelf) _ambientObject.SetActive(false);
+                return;
+            }
+
             if ((_audioEngine == null || _player == null || _visualizer == null) && Time.unscaledTime >= _nextDependencyLookupTime)
             {
                 _nextDependencyLookupTime = Time.unscaledTime + 1.0f;
@@ -476,7 +491,7 @@ namespace SonicTopography
                 _waveMaterial.SetFloat(_idStarScale, particleScale);
             }
 
-            if (_waveObject != null && !_waveObject.activeSelf)
+            if (_waveObject != null && !_waveObject.activeSelf && !_arHidden)
             {
                 _waveObject.SetActive(true);
             }

@@ -422,6 +422,32 @@ namespace SonicTopography
             if (_spatialUI == null) _spatialUI = FindFirstObjectByType<SonicSpatialUIManager>();
             if (_spatialUI == null) _spatialUI = gameObject.AddComponent<SonicSpatialUIManager>();
             _spatialUI.Initialize(visualizer, audioEngine, _library, player);
+
+            SonicStarRiverVisualizer starRiver = GetComponent<SonicStarRiverVisualizer>();
+            if (starRiver == null) starRiver = FindFirstObjectByType<SonicStarRiverVisualizer>();
+
+            AudioFloorControllerActions controllerActions = GetComponent<AudioFloorControllerActions>();
+            if (controllerActions == null) controllerActions = FindFirstObjectByType<AudioFloorControllerActions>();
+
+            SonicWebBrowserManager browserManager = GetComponent<SonicWebBrowserManager>();
+            if (browserManager == null) browserManager = FindFirstObjectByType<SonicWebBrowserManager>();
+
+            SonicMixedRealityManager mrManager = GetComponent<SonicMixedRealityManager>();
+            if (mrManager == null) mrManager = FindFirstObjectByType<SonicMixedRealityManager>();
+            if (mrManager == null) mrManager = gameObject.AddComponent<SonicMixedRealityManager>();
+            mrManager.Initialize(visualizer, audioEngine, starRiver, controllerActions, browserManager);
+
+            SonicArKeychainController keychain = GetComponent<SonicArKeychainController>();
+            if (keychain == null) keychain = FindFirstObjectByType<SonicArKeychainController>();
+            if (keychain == null) keychain = gameObject.AddComponent<SonicArKeychainController>();
+            keychain.Initialize(mrManager, player, browserManager, visualizer);
+
+            SonicArTerrainManipulator manipulator = GetComponent<SonicArTerrainManipulator>();
+            if (manipulator == null) manipulator = FindFirstObjectByType<SonicArTerrainManipulator>();
+            if (manipulator == null) manipulator = gameObject.AddComponent<SonicArTerrainManipulator>();
+            manipulator.Initialize(mrManager, visualizer, keychain);
+
+            _spatialUI.BindMixedRealityManager(mrManager);
         }
 
         private void OnDestroy()

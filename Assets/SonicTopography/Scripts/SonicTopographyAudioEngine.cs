@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Audio;
 
 namespace SonicTopography
 {
@@ -188,6 +189,24 @@ namespace SonicTopography
         private bool _externalAudioActive = false;
         private float _lastExternalUpdateTime = -10f;
 
+        // Spatial AR audio & unattenuated clip FFT buffers
+        private const int FFT_SIZE = 1024;
+        private Transform _spatialEmitterTransform;
+        private MetaXRAudioSource _metaAudioSource;
+        private MetaXRAudioSourceExperimentalFeatures _metaAudioExperimental;
+        private AudioMixerGroup _spatialMixerMaster;
+        private bool _isSpatialAudioActive = false;
+        private float _lastSpatialRadius = -1f;
+        private AnimationCurve _arRolloffCurve;
+
+        private readonly float[] _blackmanHarrisWindow = new float[FFT_SIZE];
+        private readonly float[] _fftReal = new float[FFT_SIZE];
+        private readonly float[] _fftImag = new float[FFT_SIZE];
+        private readonly float[] _fftCosTable = new float[FFT_SIZE / 2];
+        private readonly float[] _fftSinTable = new float[FFT_SIZE / 2];
+        private float[] _pcmReadBuffer = new float[FFT_SIZE * 2];
+        private bool _fftTablesInitialized = false;
+
         private float _prevBrightness = 0f;
         private SonicAudioData _smoothedData;
         private int _lastProcessedFrame = -1;
@@ -253,19 +272,159 @@ namespace SonicTopography
 
         public void EnsureAudioSourceReady()
         {
-            if (audioSource == null)
+            if (_spatialEmitterTransform == null)
             {
-                audioSource = GetComponent<AudioSource>();
+                Transform existing = transform.Find("SonicSpatialAudioEmitter");
+                if (existing != null)
+                {
+                    _spatialEmitterTransform = existing;
+                }
+                else
+                {
+                    GameObject emitterGo = new GameObject("SonicSpatialAudioEmitter");
+                    emitterGo.transform.SetParent(transform, false);
+                    emitterGo.transform.localPosition = Vector3.zero;
+                    emitterGo.transform.localRotation = Quaternion.identity;
+                    _spatialEmitterTransform = emitterGo.transform;
+                }
             }
-            if (audioSource == null)
+
+            if (audioSource == null || audioSource.gameObject == gameObject)
             {
-                audioSource = gameObject.AddComponent<AudioSource>();
+                AudioSource rootSrc = GetComponent<AudioSource>();
+                AudioSource childSrc = _spatialEmitterTransform.GetComponent<AudioSource>();
+                if (childSrc == null)
+                {
+                    childSrc = _spatialEmitterTransform.gameObject.AddComponent<AudioSource>();
+                }
+                if (rootSrc != null && rootSrc != childSrc)
+                {
+                    childSrc.clip = rootSrc.clip;
+                    childSrc.volume = rootSrc.volume;
+                    if (Application.isPlaying)
+                    {
+                        Destroy(rootSrc);
+                    }
+                }
+                audioSource = childSrc;
             }
+
+            if (_metaAudioSource == null)
+            {
+                _metaAudioSource = audioSource.GetComponent<MetaXRAudioSource>();
+                if (_metaAudioSource == null)
+                {
+                    _metaAudioSource = audioSource.gameObject.AddComponent<MetaXRAudioSource>();
+                }
+            }
+            if (_metaAudioExperimental == null)
+            {
+                _metaAudioExperimental = audioSource.GetComponent<MetaXRAudioSourceExperimentalFeatures>();
+                if (_metaAudioExperimental == null)
+                {
+                    _metaAudioExperimental = audioSource.gameObject.AddComponent<MetaXRAudioSourceExperimentalFeatures>();
+                }
+            }
+
+            if (_spatialMixerMaster == null)
+            {
+                AudioMixer mixer = Resources.Load<AudioMixer>("Audio/SonicSpatialAudioMixer");
+                if (mixer != null)
+                {
+                    AudioMixerGroup[] groups = mixer.FindMatchingGroups("Master");
+                    if (groups != null && groups.Length > 0)
+                    {
+                        _spatialMixerMaster = groups[0];
+                    }
+                }
+            }
+
+            EnsureFftTablesInitialized();
 
             audioSource.playOnAwake = false;
             audioSource.loop = loopAudio;
-            audioSource.spatialBlend = 0f; // 2D stereo so music fills headphones evenly in VR
             audioSource.volume = 1f;
+            if (!_isSpatialAudioActive)
+            {
+                audioSource.spatialBlend = 0f; // 2D stereo so music fills headphones evenly in VR
+                audioSource.spatialize = false;
+                audioSource.outputAudioMixerGroup = null;
+                _metaAudioSource.EnableSpatialization = false;
+                _metaAudioSource.EnableAcoustics = false;
+            }
+        }
+
+        public void SetSpatialAudioMode(bool arActive, Vector3 terrainWorldPos, float terrainWorldRadius)
+        {
+            EnsureAudioSourceReady();
+            if (audioSource == null) return;
+
+            if (_spatialEmitterTransform != null)
+            {
+                _spatialEmitterTransform.position = arActive ? terrainWorldPos : transform.position;
+            }
+
+            bool modeChanged = _isSpatialAudioActive != arActive;
+            bool radiusChanged = Mathf.Abs(terrainWorldRadius - _lastSpatialRadius) > 0.03f;
+            if (!modeChanged && (!arActive || !radiusChanged))
+            {
+                return;
+            }
+
+            _isSpatialAudioActive = arActive;
+            _lastSpatialRadius = terrainWorldRadius;
+
+            if (!arActive)
+            {
+                audioSource.spatialize = false;
+                audioSource.spatialBlend = 0f;
+                audioSource.spread = 0f;
+                audioSource.outputAudioMixerGroup = null;
+                if (_metaAudioSource != null)
+                {
+                    _metaAudioSource.EnableSpatialization = false;
+                    _metaAudioSource.EnableAcoustics = false;
+                }
+                return;
+            }
+
+            if (_arRolloffCurve == null)
+            {
+                _arRolloffCurve = new AnimationCurve(
+                    new Keyframe(0.0f, 1.0f),
+                    new Keyframe(0.15f, 0.96f),
+                    new Keyframe(0.35f, 0.78f),
+                    new Keyframe(0.65f, 0.56f),
+                    new Keyframe(1.0f, 0.40f)
+                );
+            }
+
+            float minDist = Mathf.Max(0.70f, terrainWorldRadius * 1.4f);
+            float maxDist = Mathf.Max(10.0f, terrainWorldRadius * 6.0f);
+
+            audioSource.outputAudioMixerGroup = _spatialMixerMaster;
+            audioSource.spatialize = true;
+            audioSource.spatializePostEffects = false;
+            audioSource.spatialBlend = 0.80f; // Rich stereo presence + convincing 3D room placement
+            audioSource.spread = Mathf.Lerp(58f, 118f, Mathf.InverseLerp(0.14f, 1.8f, terrainWorldRadius));
+            audioSource.dopplerLevel = 0f;
+            audioSource.minDistance = minDist;
+            audioSource.maxDistance = maxDist;
+            audioSource.rolloffMode = AudioRolloffMode.Custom;
+            audioSource.SetCustomCurve(AudioSourceCurveType.CustomRolloff, _arRolloffCurve);
+
+            if (_metaAudioSource != null)
+            {
+                _metaAudioSource.EnableSpatialization = true;
+                _metaAudioSource.EnableAcoustics = true;
+                _metaAudioSource.ReverbSendDb = -6.0f;
+            }
+            if (_metaAudioExperimental != null)
+            {
+                _metaAudioExperimental.HrtfIntensity = 0.76f;
+                _metaAudioExperimental.VolumetricRadius = Mathf.Clamp(terrainWorldRadius * 0.85f, 0.16f, 2.2f);
+                _metaAudioExperimental.EarlyReflectionsSendDb = -4.0f;
+            }
         }
 
         public bool IsExternalAudioActive => _externalAudioActive && (Time.unscaledTime - _lastExternalUpdateTime) < 1.0f;
@@ -349,16 +508,34 @@ namespace SonicTopography
 
                 if (localPlaying)
                 {
-                    audioSource.GetSpectrumData(_spectrumLeft, 0, FFTWindow.BlackmanHarris);
-                    audioSource.GetSpectrumData(_spectrumRight, 1, FFTWindow.BlackmanHarris);
+                    bool usedUnattenuatedClipFft = _isSpatialAudioActive &&
+                                                   audioSource.spatialBlend > 0.01f &&
+                                                   TryComputeUnattenuatedClipSpectrum(audioSource, _spectrumLeft);
 
-                    for (int i = 0; i < BIN_COUNT; i++)
+                    if (usedUnattenuatedClipFft)
                     {
-                        float linearMag = 0.5f * (_spectrumLeft[i] + _spectrumRight[i]);
-                        _smoothedLinearSpectrum[i] = smoothing * _smoothedLinearSpectrum[i] + (1f - smoothing) * linearMag;
+                        for (int i = 0; i < BIN_COUNT; i++)
+                        {
+                            float linearMag = _spectrumLeft[i];
+                            _smoothedLinearSpectrum[i] = smoothing * _smoothedLinearSpectrum[i] + (1f - smoothing) * linearMag;
 
-                        float db = 20f * Mathf.Log10(Mathf.Max(_smoothedLinearSpectrum[i], 1e-9f));
-                        _normalizedBins[i] = Mathf.Clamp01((db - minDecibels) / dbRange);
+                            float db = 20f * Mathf.Log10(Mathf.Max(_smoothedLinearSpectrum[i], 1e-9f));
+                            _normalizedBins[i] = Mathf.Clamp01((db - minDecibels) / dbRange);
+                        }
+                    }
+                    else
+                    {
+                        audioSource.GetSpectrumData(_spectrumLeft, 0, FFTWindow.BlackmanHarris);
+                        audioSource.GetSpectrumData(_spectrumRight, 1, FFTWindow.BlackmanHarris);
+
+                        for (int i = 0; i < BIN_COUNT; i++)
+                        {
+                            float linearMag = 0.5f * (_spectrumLeft[i] + _spectrumRight[i]);
+                            _smoothedLinearSpectrum[i] = smoothing * _smoothedLinearSpectrum[i] + (1f - smoothing) * linearMag;
+
+                            float db = 20f * Mathf.Log10(Mathf.Max(_smoothedLinearSpectrum[i], 1e-9f));
+                            _normalizedBins[i] = Mathf.Clamp01((db - minDecibels) / dbRange);
+                        }
                     }
                 }
                 else
@@ -801,6 +978,131 @@ namespace SonicTopography
                 _kickEnvelope + (targetEnvelope - _kickEnvelope) * envBlend
             ));
             _kickOnset = onset ? 1f : 0f;
+        }
+
+        private void EnsureFftTablesInitialized()
+        {
+            if (_fftTablesInitialized) return;
+            _fftTablesInitialized = true;
+
+            const float a0 = 0.35875f;
+            const float a1 = 0.48829f;
+            const float a2 = 0.14128f;
+            const float a3 = 0.01168f;
+            float wSum = 0f;
+            for (int n = 0; n < FFT_SIZE; n++)
+            {
+                float ratio = (2f * Mathf.PI * n) / (FFT_SIZE - 1);
+                float w = a0 - a1 * Mathf.Cos(ratio) + a2 * Mathf.Cos(2f * ratio) - a3 * Mathf.Cos(3f * ratio);
+                _blackmanHarrisWindow[n] = w;
+                wSum += w;
+            }
+            float norm = wSum > 0f ? 2f / wSum : 1f / FFT_SIZE;
+            for (int n = 0; n < FFT_SIZE; n++)
+            {
+                _blackmanHarrisWindow[n] *= norm;
+            }
+
+            for (int k = 0; k < FFT_SIZE / 2; k++)
+            {
+                float ang = -2f * Mathf.PI * k / FFT_SIZE;
+                _fftCosTable[k] = Mathf.Cos(ang);
+                _fftSinTable[k] = Mathf.Sin(ang);
+            }
+        }
+
+        private bool TryComputeUnattenuatedClipSpectrum(AudioSource src, float[] outBins)
+        {
+            AudioClip clip = src != null ? src.clip : null;
+            if (clip == null || clip.loadType == AudioClipLoadType.Streaming) return false;
+            int totalSamples = clip.samples;
+            int channels = clip.channels;
+            if (totalSamples < FFT_SIZE || channels <= 0) return false;
+
+            int needed = FFT_SIZE * channels;
+            if (_pcmReadBuffer == null || _pcmReadBuffer.Length < needed)
+            {
+                _pcmReadBuffer = new float[needed];
+            }
+
+            int startSample = Mathf.Clamp(src.timeSamples - (FFT_SIZE / 2), 0, Mathf.Max(0, totalSamples - FFT_SIZE));
+            if (!clip.GetData(_pcmReadBuffer, startSample)) return false;
+
+            EnsureFftTablesInitialized();
+
+            if (channels == 1)
+            {
+                for (int i = 0; i < FFT_SIZE; i++)
+                {
+                    _fftReal[i] = _pcmReadBuffer[i] * _blackmanHarrisWindow[i];
+                    _fftImag[i] = 0f;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < FFT_SIZE; i++)
+                {
+                    int idx = i * channels;
+                    float mono = 0.5f * (_pcmReadBuffer[idx] + _pcmReadBuffer[idx + 1]);
+                    _fftReal[i] = mono * _blackmanHarrisWindow[i];
+                    _fftImag[i] = 0f;
+                }
+            }
+
+            // Bit-reversal permutation
+            int j = 0;
+            for (int i = 1; i < FFT_SIZE; i++)
+            {
+                int bit = FFT_SIZE >> 1;
+                while ((j & bit) != 0)
+                {
+                    j ^= bit;
+                    bit >>= 1;
+                }
+                j ^= bit;
+                if (i < j)
+                {
+                    float tr = _fftReal[i];
+                    _fftReal[i] = _fftReal[j];
+                    _fftReal[j] = tr;
+                }
+            }
+
+            // In-place radix-2 Cooley-Tukey FFT
+            for (int len = 2; len <= FFT_SIZE; len <<= 1)
+            {
+                int halfLen = len >> 1;
+                int step = FFT_SIZE / len;
+                for (int i = 0; i < FFT_SIZE; i += len)
+                {
+                    int tblIdx = 0;
+                    for (int k = 0; k < halfLen; k++)
+                    {
+                        float wr = _fftCosTable[tblIdx];
+                        float wi = _fftSinTable[tblIdx];
+                        int evenIdx = i + k;
+                        int oddIdx = evenIdx + halfLen;
+
+                        float tReal = _fftReal[oddIdx] * wr - _fftImag[oddIdx] * wi;
+                        float tImag = _fftReal[oddIdx] * wi + _fftImag[oddIdx] * wr;
+
+                        _fftReal[oddIdx] = _fftReal[evenIdx] - tReal;
+                        _fftImag[oddIdx] = _fftImag[evenIdx] - tImag;
+                        _fftReal[evenIdx] += tReal;
+                        _fftImag[evenIdx] += tImag;
+
+                        tblIdx += step;
+                    }
+                }
+            }
+
+            for (int i = 0; i < BIN_COUNT; i++)
+            {
+                float re = _fftReal[i];
+                float im = _fftImag[i];
+                outBins[i] = Mathf.Sqrt(re * re + im * im);
+            }
+            return true;
         }
     }
 }

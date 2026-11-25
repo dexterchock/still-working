@@ -4,6 +4,12 @@ Shader "SonicTopography/TerrainPillars"
     {
         _BoxWidth ("Box Width", Float) = 0.9
         _uGlowIntensity ("Glow Intensity", Float) = 1.0
+        _uArMode ("AR Mode Blend", Range(0, 1)) = 0.0
+        _uArOcclusionEnabled ("AR Depth Occlusion", Float) = 1.0
+        _uArBaseHeight ("AR Base Height", Float) = 0.045
+        _uArSurfaceLiftWorld ("AR Surface Lift (m)", Float) = 0.0018
+        _uArIdleBoost ("AR Idle Glow Boost", Float) = 0.32
+        _EnvironmentDepthBias ("Environment Depth Bias", Float) = 0.0
     }
     SubShader
     {
@@ -30,8 +36,10 @@ Shader "SonicTopography/TerrainPillars"
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_instancing
+            #pragma multi_compile _ HARD_OCCLUSION SOFT_OCCLUSION
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.meta.xr.sdk.core/Shaders/EnvironmentDepth/URP/EnvironmentOcclusionURP.hlsl"
 
             float _uTime;
 
@@ -71,6 +79,14 @@ Shader "SonicTopography/TerrainPillars"
             float4x4 _PlatterMatrix;
             float _BoxWidth;
 
+            // Passthrough AR Adaptation
+            float _uArMode;
+            float _uArOcclusionEnabled;
+            float _uArBaseHeight;
+            float _uArSurfaceLiftWorld;
+            float _uArIdleBoost;
+            float _EnvironmentDepthBias;
+
             // Ripples: xy = pos, z = time, w = strength
             float4 _uRipplePosTimeStrength[10];
             // Ripples state: x = isActive, y = rippleType (0 = normal, 1 = white)
@@ -94,6 +110,7 @@ Shader "SonicTopography/TerrainPillars"
                 float4 currentGlowAndN  : TEXCOORD3; // rgb = currentGlow, w = normElevation
                 float4 rippleAddAndE    : TEXCOORD4; // rgb = rippleAdd, w = activeEnergy
                 float  brillianceSpark  : TEXCOORD5;
+                float3 worldPos         : TEXCOORD6;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -291,7 +308,8 @@ Shader "SonicTopography/TerrainPillars"
                 float2 rippleAnim = float2(saturate(rippleIntensityNormal), saturate(rippleIntensityWhite));
 
                 float yPos = input.positionOS.y + 0.5; // 0 to 1
-                float totalHeight = 1.0 + elevation;
+                float baseHeight = lerp(1.0, _uArBaseHeight, _uArMode);
+                float totalHeight = baseHeight + elevation;
                 float3 localPos = float3(
                     input.positionOS.x * _BoxWidth,
                     -0.5 + yPos * totalHeight,
@@ -300,14 +318,26 @@ Shader "SonicTopography/TerrainPillars"
 
                 float3 platterPos = instancePos + localPos;
                 float vertexDist = length(platterPos.xz);
-                VertexPositionInputs posInputs = GetVertexPositionInputs(platterPos);
-                output.positionCS = posInputs.positionCS;
+                float3 worldPos = TransformObjectToWorld(platterPos);
+                if (_uArMode > 0.0001)
+                {
+                    float3 platterUpWS = normalize(TransformObjectToWorldDir(float3(0.0, 1.0, 0.0)));
+                    worldPos += platterUpWS * (_uArSurfaceLiftWorld * _uArMode);
+                }
+                output.positionCS = TransformWorldToHClip(worldPos);
+                output.worldPos = worldPos;
                 output.uvAndRelYDist = float4(input.uv.x, input.uv.y, yPos, vertexDist);
 
                 // Precompute constant per-pillar colors & glow once per vertex instead of per pixel
                 float normElevation = saturate(elevation / 8.0);
+                float arIdlePulse = sin(centerDist * 0.16 - _uTime * 1.45) * 0.5 + 0.5;
+                float arIdleWave = _uArMode * _uArIdleBoost * (0.35 + 0.65 * arIdlePulse);
+                normElevation = saturate(normElevation + arIdleWave * (1.0 - normElevation * 0.6));
+
                 float3 backdropColor = _uFogColor.rgb;
-                float outerBaseBlend = glslSmoothstep(22.0, 62.0, centerDist);
+                float vrOuterBlend = glslSmoothstep(22.0, 62.0, centerDist);
+                float arOuterBlend = glslSmoothstep(66.0, 77.5, centerDist) * 0.22;
+                float outerBaseBlend = lerp(vrOuterBlend, arOuterBlend, _uArMode);
                 float3 cBase1 = lerp(_uBaseColor1.rgb, backdropColor, outerBaseBlend);
                 float3 cBase2 = lerp(_uBaseColor2.rgb, backdropColor, outerBaseBlend);
 
@@ -321,12 +351,12 @@ Shader "SonicTopography/TerrainPillars"
                 float3 zoneEdge = lerp(coolEdge, warmEdge, warmBlend);
 
                 float3 targetGlow = lerp(zoneCore, zoneEdge, frac(rnd * 11.0));
-                float distFade = 1.0 - glslSmoothstep(38.0, 72.0, centerDist);
+                float distFade = 1.0 - glslSmoothstep(lerp(38.0, 71.5, _uArMode), lerp(72.0, 77.4, _uArMode), centerDist);
 
                 float3 brightCool = lerp(coolCore, float3(1.0, 1.0, 1.0), 0.28);
                 targetGlow = lerp(targetGlow, brightCool, _uBrightness * 0.6);
 
-                float3 currentGlow = lerp(cBase2, targetGlow, normElevation) * (_uGlowIntensity * 1.22) * distFade;
+                float3 currentGlow = lerp(cBase2, targetGlow, normElevation) * (_uGlowIntensity * (1.22 + 0.18 * _uArMode)) * distFade;
                 currentGlow = lerp(currentGlow, _uRippleColor.rgb * 1.25, rippleAnim.x);
                 currentGlow = lerp(currentGlow, float3(1.25, 1.25, 1.25), rippleAnim.y);
 
@@ -420,19 +450,41 @@ Shader "SonicTopography/TerrainPillars"
                 float activeEnergy = input.rippleAddAndE.w;
                 finalColor = lerp(finalColor, finalColor * (1.18 + 0.36 * activeEnergy), activeEnergy);
 
-                // Smooth distance fade into backdropColor before linear conversion
-                float preFade = 1.0 - glslSmoothstep(32.0, 74.0, vertexDist);
+                // Smooth distance fade into backdropColor before linear conversion (bypassed cleanly in AR mode)
+                float preFade = lerp(1.0 - glslSmoothstep(32.0, 74.0, vertexDist), 1.0, _uArMode);
                 finalColor = lerp(_uFogColor.rgb, finalColor, preFade);
 
                 #if !defined(UNITY_COLORSPACE_GAMMA)
                 finalColor = srgbToLinearSafe(finalColor);
                 #endif
 
-                // Exact Linear-space infinite-void horizon blend (guarantees 100.0% match with Camera/Skybox at edge)
+                // Exact Linear-space infinite-void horizon blend (disabled in AR so physical rim stays crisp)
                 float voidFade = preFade * preFade;
                 finalColor = lerp(_uBackdropLinear.rgb, finalColor, voidFade);
 
-                return half4(finalColor, 1.0);
+                // Subtle Quest 3 passthrough camera blending (temporal micro-grain & gentle edge softening)
+                if (_uArMode > 0.001)
+                {
+                    float pixelHash = frac(sin(dot(floor(input.positionCS.xy), float2(12.9898, 78.233)) + _uTime * 19.37) * 43758.5453);
+                    float grain = (pixelHash - 0.5) * 0.022 * _uArMode;
+                    finalColor = max(0.0, finalColor + grain * (0.25 + 0.75 * saturate(dot(finalColor, float3(0.3, 0.59, 0.11)))));
+
+                    float2 edgeDistUV = min(uv, 1.0 - uv);
+                    float edgeSoft = smoothstep(0.0, 0.035, min(edgeDistUV.x, edgeDistUV.y));
+                    finalColor *= lerp(1.0, lerp(0.92, 1.0, edgeSoft), _uArMode);
+                }
+
+                half4 finalOut = half4(finalColor, 1.0h);
+
+                #if defined(HARD_OCCLUSION) || defined(SOFT_OCCLUSION)
+                if (_uArMode > 0.01 && _uArOcclusionEnabled > 0.5)
+                {
+                    float occ = CalculateEnvironmentDepthOcclusion(input.worldPos, _EnvironmentDepthBias);
+                    finalOut *= (half)occ;
+                }
+                #endif
+
+                return finalOut;
             }
             ENDHLSL
         }

@@ -1,13 +1,14 @@
 # Audio & Music Library System
 
-Last updated: 2026-11-22
+Last updated: 2026-11-26
 
 ## Key Scripts & Native Plugin
 - `Assets/SonicTopography/Scripts/SonicMusicLibraryManager.cs`: Runtime storage permission request, async time-sliced library scan (`4 ms/frame` budget), metadata/cover art extraction, album color palette extraction, and audio clip loading/caching.
 - `Assets/SonicTopography/Scripts/SonicMusicPlayerController.cs`: Queue/shuffle/repeat (`RepeatAll` default in memory, persisted in `PlayerPrefs`), play/pause/seek, and `OnTrackChanged` / `OnPlaybackStateChanged` events.
-- `Assets/SonicTopography/Scripts/SonicTopographyAudioEngine.cs`: Wraps Unity `AudioSource` (`spatialBlend = 0f`) plus external Web Audio spectrum input (`SetExternalAudioSpectrum`), samples `512`-bin FFT, computes 8 frequency bands (`SubBass`..`Air`) + timbral metrics + auto beat triggers (`Pulse`, `Snare`, `Meteor`).
+- `Assets/SonicTopography/Scripts/SonicTopographyAudioEngine.cs`: Drives a child `SonicSpatialAudioEmitter` (`AudioSource` + `MetaXRAudioSource` + `MetaXRAudioSourceExperimentalFeatures`) routed through `Assets/SonicTopography/Resources/Audio/SonicSpatialAudioMixer.mixer` (`Meta XR Audio` spatialized volumetric spread in AR, 2D stereo in VR) plus external Web Audio spectrum input (`SetExternalAudioSpectrum`). Computes unattenuated clip PCM FFT (`TryComputeUnattenuatedClipSpectrum`, zero-alloc Cooley-Tukey Blackman-Harris) in AR so listener distance never reduces terrain FFT reactivity.
+- `Assets/SonicTopography/Scripts/SonicMixedRealityManager.cs`: Coordinates `MetaXRAudioRoomAcousticProperties` bounds with `MRUKRoom` dimensions and toggles `SetSpatialAudioMode` between VR and AR.
 - `Assets/SonicTopography/Plugins/Android/SonicAndroidAudioDecoder.java`: `com.sonictopography.audio.SonicAndroidAudioDecoder.decodeToStereoWav(inputPath, outputWavPath)` using Android `MediaExtractor` + `MediaCodec` off-thread.
-- `Assets/SonicTopography/Plugins/Android/SonicGeckoBrowserBridge.java` + `Assets/StreamingAssets/sonic_browser_ext/{manifest.json, background.js, content.js}`: Built-in GeckoView WebExtension tapping `<video>`/`<audio>` via Web Audio `AnalyserNode(fftSize=1024)` + `mediaSession` metadata over GeckoView native messaging (`sonic_browser`) without `RECORD_AUDIO`.
+- `Assets/SonicTopography/Plugins/Android/SonicGeckoBrowserBridge.java` + `Assets/StreamingAssets/sonic_browser_ext/{manifest.json, background.js, content.js}`: Built-in GeckoView WebExtension tapping `<video>`/`<audio>` via Web Audio `AnalyserNode(fftSize=1024)` + downstream HRTF `ChannelSplitter` + dual `PannerNode`s + `mediaSession` metadata over GeckoView native messaging (`sonic_browser`) without `RECORD_AUDIO`.
 
 ## Permissions & VRC.Quest.Security.2 Compliance
 - **Manifest** (`Assets/Plugins/Android/AndroidManifest.xml`): Declares `READ_MEDIA_AUDIO`, `READ_EXTERNAL_STORAGE` (for `minSdkVersion=32` compat), `requestLegacyExternalStorage="true"`, and `SkipPermissionsDialog="false"`. Eye-tracking permissions are stripped (`tools:node="remove"` + `SonicQuestBuildTools`).

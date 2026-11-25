@@ -165,6 +165,8 @@ namespace SonicTopography.Editor
             CreateOrUpdateMaterialAsset(matDir, "SonicStarRiver", "Shaders/SonicStarRiver", "SonicTopography/StarRiver");
             CreateOrUpdateMaterialAsset(matDir, "SonicAmbientStarfield", "Shaders/SonicAmbientStarfield", "SonicTopography/AmbientStarfield");
             CreateOrUpdateMaterialAsset(matDir, "SonicBrowserUnderlayPunchout", "Shaders/SonicBrowserUnderlayPunchout", "SonicTopography/BrowserUnderlayPunchout");
+            CreateOrUpdateMaterialAsset(matDir, "SonicRoomLightWash", "Shaders/SonicRoomLightWash", "SonicTopography/RoomLightWash");
+            CreateOrUpdateMaterialAsset(matDir, "SonicArVoidDissolveDome", "Shaders/SonicArVoidDissolveDome", "SonicTopography/ArVoidDissolveDome");
         }
 
         private static void CreateOrUpdateMaterialAsset(string matDir, string name, string resPath, string shaderName)
@@ -392,6 +394,8 @@ namespace SonicTopography.Editor
                     EnsurePermission(doc, manifestRoot, androidNs, "android.permission.READ_EXTERNAL_STORAGE");
                     EnsurePermission(doc, manifestRoot, androidNs, "android.permission.INTERNET");
                     EnsurePermission(doc, manifestRoot, androidNs, "android.permission.ACCESS_NETWORK_STATE");
+                    EnsurePermission(doc, manifestRoot, androidNs, "com.oculus.permission.USE_SCENE");
+                    EnsureOptionalFeature(doc, manifestRoot, androidNs, "com.oculus.feature.PASSTHROUGH");
 
                     XmlNode appNode = manifestRoot.SelectSingleNode("application");
                     if (appNode is XmlElement appElem)
@@ -553,6 +557,27 @@ namespace SonicTopography.Editor
             XmlElement permElem = doc.CreateElement("uses-permission");
             permElem.SetAttribute("name", androidNs, permName);
             manifestRoot.AppendChild(permElem);
+        }
+
+        private static void EnsureOptionalFeature(XmlDocument doc, XmlElement manifestRoot, string androidNs, string featureName)
+        {
+            XmlNodeList features = manifestRoot.SelectNodes("uses-feature");
+            if (features != null)
+            {
+                foreach (XmlNode node in features)
+                {
+                    if (node is XmlElement el && el.GetAttribute("name", androidNs) == featureName)
+                    {
+                        el.SetAttribute("required", androidNs, "false");
+                        return;
+                    }
+                }
+            }
+
+            XmlElement featElem = doc.CreateElement("uses-feature");
+            featElem.SetAttribute("name", androidNs, featureName);
+            featElem.SetAttribute("required", androidNs, "false");
+            manifestRoot.AppendChild(featElem);
         }
     }
 }

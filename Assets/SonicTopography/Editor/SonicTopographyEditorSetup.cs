@@ -111,6 +111,13 @@ namespace SonicTopography.Editor
             return false;
         }
 
+        private static readonly string[] RequiredOpenXRFeatureFullNames = new string[]
+        {
+            "UnityEngine.XR.OpenXR.Features.Meta.AROcclusionFeature",
+            "UnityEngine.XR.OpenXR.Features.Meta.ARSessionFeature",
+            "UnityEngine.XR.OpenXR.Features.Meta.OpenXRLifeCycleFeature"
+        };
+
         public static void EnsureOpenXRInteractionProfilesEnabled()
         {
             const string settingsPath = "Assets/XR/Settings/OpenXR Package Settings.asset";
@@ -122,6 +129,7 @@ namespace SonicTopography.Editor
             {
                 if (asset == null) continue;
                 string typeName = asset.GetType().Name;
+                string fullName = asset.GetType().FullName ?? typeName;
                 bool shouldEnable = false;
                 for (int i = 0; i < RequiredOpenXRFeatureTypeNames.Length; i++)
                 {
@@ -129,6 +137,18 @@ namespace SonicTopography.Editor
                     {
                         shouldEnable = true;
                         break;
+                    }
+                }
+                if (!shouldEnable)
+                {
+                    for (int i = 0; i < RequiredOpenXRFeatureFullNames.Length; i++)
+                    {
+                        if (string.Equals(fullName, RequiredOpenXRFeatureFullNames[i], StringComparison.Ordinal) &&
+                            asset.name != null && asset.name.EndsWith("Android", StringComparison.Ordinal))
+                        {
+                            shouldEnable = true;
+                            break;
+                        }
                     }
                 }
 

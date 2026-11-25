@@ -71,6 +71,10 @@ namespace SonicTopography
         private float _suppressJumpUntilTime = -100f;
 
         private UnityEngine.XR.Interaction.Toolkit.Locomotion.XRBodyTransformer _bodyTransformer;
+        private UnityEngine.XR.Interaction.Toolkit.Samples.StarterAssets.DynamicMoveProvider _moveProvider;
+        private UnityEngine.XR.Interaction.Toolkit.Locomotion.Turning.SnapTurnProvider _turnProvider;
+        private TeleportationProvider _teleportProvider;
+        private bool _arLocomotionDisabled = false;
 
 #if UNITY_EDITOR
         private UnityEngine.XR.Interaction.Toolkit.Samples.StarterAssets.DynamicMoveProvider _editorMoveProvider;
@@ -212,6 +216,19 @@ namespace SonicTopography
             if (_characterController == null) _characterController = FindFirstObjectByType<CharacterController>();
             if (_xrOrigin == null) _xrOrigin = FindFirstObjectByType<XROrigin>();
 
+            if (_xrOrigin != null)
+            {
+                if (_moveProvider == null)
+                    _moveProvider = _xrOrigin.GetComponentInChildren<UnityEngine.XR.Interaction.Toolkit.Samples.StarterAssets.DynamicMoveProvider>(true);
+                if (_turnProvider == null)
+                    _turnProvider = _xrOrigin.GetComponentInChildren<UnityEngine.XR.Interaction.Toolkit.Locomotion.Turning.SnapTurnProvider>(true);
+                if (_teleportProvider == null)
+                    _teleportProvider = _xrOrigin.GetComponentInChildren<TeleportationProvider>(true);
+            }
+            if (_moveProvider == null) _moveProvider = FindFirstObjectByType<UnityEngine.XR.Interaction.Toolkit.Samples.StarterAssets.DynamicMoveProvider>(FindObjectsInactive.Include);
+            if (_turnProvider == null) _turnProvider = FindFirstObjectByType<UnityEngine.XR.Interaction.Toolkit.Locomotion.Turning.SnapTurnProvider>(FindObjectsInactive.Include);
+            if (_teleportProvider == null) _teleportProvider = FindFirstObjectByType<TeleportationProvider>(FindObjectsInactive.Include);
+
 #if UNITY_EDITOR
             if (_xrOrigin != null)
             {
@@ -330,8 +347,11 @@ namespace SonicTopography
                 out bool leftGripDown,
                 out bool rightGripDown);
 
-            // 2. Button A: Jump (Strictly Physical Controller only, and never during/after Virtual Keyboard or Focus handoff)
-            if (aDown && !keyboardOrFocusBusy && Time.unscaledTime >= _suppressJumpUntilTime)
+            bool arControlActive = SonicMixedRealityManager.IsArControlActive;
+            SyncArLocomotionProviders(arControlActive);
+
+            // 2. Button A: Jump (Strictly Physical Controller only, disabled in AR, and never during/after Virtual Keyboard or Focus handoff)
+            if (!arControlActive && aDown && !keyboardOrFocusBusy && Time.unscaledTime >= _suppressJumpUntilTime)
             {
                 PerformJump();
             }
@@ -383,23 +403,65 @@ namespace SonicTopography
                 }
             }
 
-            // 6. Left Hand Grip Trigger: Previous Theme
-            if (leftGripDown && !keyboardOrFocusBusy)
+            // 6. Left Hand Grip Trigger: Previous Theme (suppressed in AR because Grip grabs/scales terrain)
+            if (!arControlActive && leftGripDown && !keyboardOrFocusBusy)
             {
                 CycleTheme(-1);
             }
 
-            // 7. Right Hand Grip Trigger: Next Theme
-            if (rightGripDown && !keyboardOrFocusBusy)
+            // 7. Right Hand Grip Trigger: Next Theme (suppressed in AR because Grip grabs/scales terrain)
+            if (!arControlActive && rightGripDown && !keyboardOrFocusBusy)
             {
                 CycleTheme(1);
             }
 
-            // 8. Artificial Locomotion (Smooth continuous walking & Snap turning)
-            UpdateArtificialLocomotion();
+            if (!arControlActive)
+            {
+                // 8. Artificial Locomotion (Smooth continuous walking & Snap turning)
+                UpdateArtificialLocomotion();
 
-            // 9. Update jump physics or lock vertical origin to ground (stage or terrain)
-            UpdateJumpPhysicsAndLockGroundHeight();
+                // 9. Update jump physics or lock vertical origin to ground (stage or terrain)
+                UpdateJumpPhysicsAndLockGroundHeight();
+            }
+        }
+
+        private void SyncArLocomotionProviders(bool disableForAr)
+        {
+            if (_arLocomotionDisabled == disableForAr) return;
+            _arLocomotionDisabled = disableForAr;
+
+            if (_moveProvider != null) _moveProvider.enabled = !disableForAr;
+            if (_turnProvider != null) _turnProvider.enabled = !disableForAr;
+            if (_teleportProvider != null) _teleportProvider.enabled = !disableForAr;
+        }
+
+        public void RecenterUserOntoGlassStage()
+        {
+            _isJumping = false;
+            _verticalVelocity = 0f;
+            SyncArLocomotionProviders(false);
+
+            if (_xrOrigin == null) _xrOrigin = FindFirstObjectByType<XROrigin>();
+            if (_originTransform == null && _xrOrigin != null)
+            {
+                _originTransform = _xrOrigin.Origin != null ? _xrOrigin.Origin.transform : _xrOrigin.transform;
+            }
+            if (_originTransform == null) return;
+
+            Transform camTr = GetHeadCameraTransform();
+            Vector3 targetOrigin = _originTransform.position;
+            if (camTr != null)
+            {
+                targetOrigin.x -= camTr.position.x;
+                targetOrigin.z -= camTr.position.z;
+            }
+            else
+            {
+                targetOrigin.x = 0f;
+                targetOrigin.z = 0f;
+            }
+            targetOrigin.y = 0f;
+            _originTransform.position = targetOrigin;
         }
 
         private void LateUpdate()
@@ -465,6 +527,8 @@ namespace SonicTopography
 
         private void LockVerticalOriginToGround()
         {
+            if (SonicMixedRealityManager.IsArControlActive) return;
+
             if (_originTransform != null)
             {
                 Vector3 pos = _originTransform.position;
