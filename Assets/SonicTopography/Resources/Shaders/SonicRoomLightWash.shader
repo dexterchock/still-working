@@ -3,7 +3,8 @@ Shader "SonicTopography/RoomLightWash"
     Properties
     {
         _uRoomGlowIntensity ("Room Glow Intensity", Float) = 1.0
-        _EnvironmentDepthBias ("Environment Depth Bias", Float) = 0.02
+        _EnvironmentDepthBias ("Environment Depth Bias", Float) = 0.075
+        _uLocalDiscFadeRadius ("Local Disc Fade Radius (0=off)", Float) = 0.0
     }
     SubShader
     {
@@ -21,12 +22,10 @@ Shader "SonicTopography/RoomLightWash"
             Name "RoomLightWash"
             Tags { "LightMode" = "UniversalForward" }
 
-            Cull Back
+            Cull Off
             ZWrite Off
             ZTest LEqual
-            // Strict alpha preservation: adds bounced light onto real room surfaces without touching eye-buffer alpha
-            Blend One One, Zero One
-            ColorMask RGB
+            Blend One OneMinusSrcAlpha
 
             HLSLPROGRAM
             #pragma target 3.5
@@ -56,6 +55,15 @@ Shader "SonicTopography/RoomLightWash"
 
             float _uRoomGlowIntensity;
             float _EnvironmentDepthBias;
+            float _uLocalDiscFadeRadius;
+
+            float3 srgbToLinearSafe(float3 c)
+            {
+                float3 clamped = saturate(c);
+                float3 excess = max(0.0, c - 1.0);
+                float3 lin = pow(clamped, 2.2);
+                return lin + excess;
+            }
 
             struct Attributes
             {
@@ -119,32 +127,41 @@ Shader "SonicTopography/RoomLightWash"
                 // Project onto platter XZ basis for wave origin continuity
                 float2 surfLocalXZ = float2(dot(inPlaneVec, platterRight), dot(inPlaneVec, platterFwd)) / platterScale;
 
-                // Soft geometric bounce factor: walls/tables/floors facing toward the LED sculpture receive more light
+                // Two-sided geometric bounce factor: flat desks/floors/walls under the platter glow vividly
                 float3 toPlatter = (surfDist > 0.001) ? (-rel / surfDist) : platterN;
-                float facing = saturate(dot(surfN, toPlatter) * 0.72 + 0.32);
+                float facing = saturate(abs(dot(surfN, toPlatter)) * 0.55 + 0.55);
+
+                float3 coolCol = _uSonicRoomCoolCore.rgb;
+                float3 warmCol = _uSonicRoomWarmCore.rgb;
+                float3 rippleCol = _uSonicRoomRippleColor.rgb;
+                #if !defined(UNITY_COLORSPACE_GAMMA)
+                coolCol = srgbToLinearSafe(coolCol);
+                warmCol = srgbToLinearSafe(warmCol);
+                rippleCol = srgbToLinearSafe(rippleCol);
+                #endif
 
                 // Smoothly avoid harsh double-glow underneath the center of the physical sculpture itself
-                float outsideRim = smoothstep(platterRadius * 0.55, platterRadius * 1.12, radialDist + abs(heightOnPlatter) * 0.65);
+                float outsideRim = smoothstep(platterRadius * 0.45, platterRadius * 1.05, radialDist + abs(heightOnPlatter) * 0.5);
 
                 // 1. Pure realistic bounced room light wash
-                float reach = max(1.1, platterRadius * 3.4);
+                float reach = max(2.4, platterRadius * 5.2);
                 float normDist = surfDist / reach;
-                float falloff = 1.0 / (1.0 + normDist * normDist * 5.2);
-                float softCutoff = exp(-normDist * 1.15);
+                float falloff = 1.0 / (1.0 + normDist * normDist * 2.8);
+                float softCutoff = exp(-normDist * 0.85);
 
-                float activeLevel = saturate(audioEnergy * 0.95 + bassEnergy * 0.55);
-                float breathLevel = 0.14 + 0.08 * idlePulse;
-                float bounceStrength = (breathLevel + activeLevel * 0.85) * falloff * softCutoff * facing * (0.28 + 0.72 * outsideRim);
+                float activeLevel = saturate(audioEnergy * 1.15 + bassEnergy * 0.75);
+                float breathLevel = 0.36 + 0.16 * idlePulse;
+                float bounceStrength = (breathLevel + activeLevel * 1.10) * falloff * softCutoff * facing * (0.35 + 0.65 * outsideRim);
 
-                float3 themeBase = lerp(_uSonicRoomCoolCore.rgb, _uSonicRoomWarmCore.rgb, saturate(warmth * 1.25 + radialDist * 0.2));
-                float3 lightRgb = themeBase * (bounceStrength * 0.42);
+                float3 themeBase = lerp(coolCol, warmCol, saturate(warmth * 1.25 + radialDist * 0.15));
+                float3 lightRgb = themeBase * (bounceStrength * 1.15);
 
                 // 2. Spilling music waves from active terrain ripples (seamless rim transition onto real room geometry)
-                float waveOutsideMask = smoothstep(platterRadius * 0.78, platterRadius * 1.04, radialDist + abs(heightOnPlatter) * 0.4);
+                float waveOutsideMask = smoothstep(platterRadius * 0.72, platterRadius * 1.02, radialDist + abs(heightOnPlatter) * 0.35);
                 if (waveOutsideMask > 0.002)
                 {
-                    float outsideMeters = max(0.0, surfDist - platterRadius * 0.85);
-                    float roomAtten = exp(-outsideMeters * 0.52) * (0.45 + 0.55 * facing);
+                    float outsideMeters = max(0.0, surfDist - platterRadius * 0.82);
+                    float roomAtten = exp(-outsideMeters * 0.34) * (0.55 + 0.45 * facing);
 
                     float normalWaveSum = 0.0;
                     float whiteWaveSum = 0.0;
@@ -163,12 +180,11 @@ Shader "SonicTopography/RoomLightWash"
                             float distUnits = length(surfLocalXZ - rPos);
                             float timeSince = max(0.0, uTime - rTime);
 
-                            float curSpeed = (rType > 0.5) ? 20.0 : 15.0;
-                            float curWidth = (rType > 0.5) ? 22.0 : 48.0;
-                            float curFadeUnits = (rType > 0.5) ? 58.0 : 95.0;
+                            float curSpeed = (rType > 0.5) ? 26.0 : 20.0;
+                            float curWidth = (rType > 0.5) ? 140.0 : 220.0;
+                            float curFadeUnits = (rType > 0.5) ? 175.0 : 260.0;
 
                             float waveRadius = timeSince * curSpeed;
-                            // Wait until wave reaches outer edge of terrain so spills emerge organically from rim
                             float d = distUnits - waveRadius;
                             float ring = exp(-(d * d) / curWidth);
                             float fade = exp(-waveRadius / curFadeUnits);
@@ -185,21 +201,31 @@ Shader "SonicTopography/RoomLightWash"
                         }
                     }
 
-                    float3 spillColor = lerp(_uSonicRoomRippleColor.rgb, _uSonicRoomWarmCore.rgb, 0.25) * (normalWaveSum * 0.65)
-                                      + float3(0.92, 0.96, 1.0) * (whiteWaveSum * 0.70);
+                    float3 spillColor = lerp(rippleCol, warmCol, 0.25) * (normalWaveSum * 1.65)
+                                      + float3(0.95, 0.98, 1.0) * (whiteWaveSum * 1.55);
                     lightRgb += spillColor * (waveOutsideMask * roomAtten);
                 }
+
+                if (_uLocalDiscFadeRadius > 0.01)
+                {
+                    float discFade = 1.0 - smoothstep(_uLocalDiscFadeRadius * 0.42, _uLocalDiscFadeRadius, radialDist);
+                    lightRgb *= discFade;
+                }
+
+                lightRgb *= (glowIntensity * visibility);
+                float peakLum = max(lightRgb.r, max(lightRgb.g, lightRgb.b));
+                float outAlpha = saturate(peakLum * 0.42);
 
                 #if defined(HARD_OCCLUSION) || defined(SOFT_OCCLUSION)
                 if (_uSonicRoomOcc.x > 0.5)
                 {
                     float occ = CalculateEnvironmentDepthOcclusion(input.posWorld, _EnvironmentDepthBias);
                     lightRgb *= occ;
+                    outAlpha *= occ;
                 }
                 #endif
 
-                lightRgb *= (glowIntensity * visibility);
-                return half4(lightRgb, 0.0h);
+                return half4(lightRgb, (half)outAlpha);
             }
             ENDHLSL
         }

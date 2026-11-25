@@ -115,6 +115,7 @@ namespace SonicTopography
         private Quaternion _arPlatterRot = Quaternion.identity;
         private float _arPlatterScale = 1f;
         private bool _arOcclusionEnabled = false;
+        private bool _arIsSnapped = false;
         private bool _vrEffectsHidden = false;
 
         public float CurrentPlatterRotationDegrees => _platterRotationRad * Mathf.Rad2Deg;
@@ -152,13 +153,14 @@ namespace SonicTopography
             }
         }
 
-        public void SetArModeState(float arBlend, Vector3 arPos, Quaternion arRot, float arScale, bool occlusionEnabled)
+        public void SetArModeState(float arBlend, Vector3 arPos, Quaternion arRot, float arScale, bool occlusionEnabled, bool isSnapped = false)
         {
             _arBlend = Mathf.Clamp01(arBlend);
             _arPlatterPos = arPos;
             _arPlatterRot = arRot;
             _arPlatterScale = Mathf.Max(0.0005f, arScale);
             _arOcclusionEnabled = occlusionEnabled;
+            _arIsSnapped = isSnapped;
 
             Vector3 effectivePos = _arBlend > 0.0001f ? _arPlatterPos : platterWorldPosition;
             Quaternion effectiveRot = _arBlend > 0.0001f
@@ -184,6 +186,7 @@ namespace SonicTopography
                 _terrainMaterial.SetMatrix(PropPlatterMatrix, Matrix4x4.TRS(effectivePos, effectiveRot, Vector3.one * effectiveScale));
                 _terrainMaterial.SetFloat(PropUArMode, _arBlend);
                 _terrainMaterial.SetFloat(PropUArOcclusionEnabled, _arOcclusionEnabled ? 1f : 0f);
+                _terrainMaterial.SetFloat(PropEnvironmentDepthBias, _arIsSnapped ? 0.032f : 0.012f);
             }
         }
 
@@ -307,6 +310,7 @@ namespace SonicTopography
         private static readonly int PropUItemScale = Shader.PropertyToID("_uItemScale");
         private static readonly int PropUArMode = Shader.PropertyToID("_uArMode");
         private static readonly int PropUArOcclusionEnabled = Shader.PropertyToID("_uArOcclusionEnabled");
+        private static readonly int PropEnvironmentDepthBias = Shader.PropertyToID("_EnvironmentDepthBias");
 
         private void Awake()
         {
@@ -1026,13 +1030,15 @@ namespace SonicTopography
             _terrainMaterial.SetFloat(PropUAmplitude, amplitudeMultiplier);
             _terrainMaterial.SetFloat(PropUArMode, _arBlend);
             _terrainMaterial.SetFloat(PropUArOcclusionEnabled, _arOcclusionEnabled ? 1f : 0f);
+            _terrainMaterial.SetFloat(PropEnvironmentDepthBias, _arIsSnapped ? 0.032f : 0.012f);
             LastAudioEnergy = eqEnergy;
             LastBassEnergy = _smBass;
             LastWarmth = uWarmth;
 
+            float maxRippleAge = _arBlend > 0.05f ? 11.0f : 7.5f;
             for (int r = 0; r < MAX_RIPPLES; r++)
             {
-                if (_rippleState[r].x > 0.5f && (elapsed - _ripplePosTimeStrength[r].z) > 7.5f)
+                if (_rippleState[r].x > 0.5f && (elapsed - _ripplePosTimeStrength[r].z) > maxRippleAge)
                 {
                     _rippleState[r] = Vector4.zero;
                 }

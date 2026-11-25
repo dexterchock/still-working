@@ -117,6 +117,10 @@ namespace SonicTopography.Editor
                 projectConfig.targetDeviceTypes.Clear();
                 projectConfig.targetDeviceTypes.Add(OVRProjectConfig.DeviceType.Quest3);
                 projectConfig.targetDeviceTypes.Add(OVRProjectConfig.DeviceType.Quest3S);
+                projectConfig.sceneSupport = OVRProjectConfig.FeatureSupport.Supported;
+                projectConfig.anchorSupport = OVRProjectConfig.AnchorSupport.Enabled;
+                projectConfig.insightPassthroughSupport = OVRProjectConfig.FeatureSupport.Supported;
+                projectConfig.boundaryVisibilitySupport = OVRProjectConfig.FeatureSupport.Supported;
                 EditorUtility.SetDirty(projectConfig);
             }
 
@@ -395,6 +399,8 @@ namespace SonicTopography.Editor
                     EnsurePermission(doc, manifestRoot, androidNs, "android.permission.INTERNET");
                     EnsurePermission(doc, manifestRoot, androidNs, "android.permission.ACCESS_NETWORK_STATE");
                     EnsurePermission(doc, manifestRoot, androidNs, "com.oculus.permission.USE_SCENE");
+                    EnsurePermission(doc, manifestRoot, androidNs, "com.oculus.permission.USE_ANCHOR_API");
+                    EnsurePermission(doc, manifestRoot, androidNs, "com.oculus.permission.BOUNDARY_VISIBILITY");
                     EnsureOptionalFeature(doc, manifestRoot, androidNs, "com.oculus.feature.PASSTHROUGH");
 
                     XmlNode appNode = manifestRoot.SelectSingleNode("application");

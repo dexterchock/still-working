@@ -319,8 +319,8 @@ namespace SonicTopography
                 }
             }
 
-            float posLerp = 1f - Mathf.Exp(-18f * Time.unscaledDeltaTime);
-            float rotLerp = 1f - Mathf.Exp(-12f * Time.unscaledDeltaTime);
+            float posLerp = 1f - Mathf.Exp((snapped ? -15f : -18f) * Time.unscaledDeltaTime);
+            float rotLerp = 1f - Mathf.Exp((snapped ? -26f : -12f) * Time.unscaledDeltaTime);
             float scaleLerp = 1f - Mathf.Exp(-16f * Time.unscaledDeltaTime);
 
             _smoothedTargetPos = Vector3.Lerp(_smoothedTargetPos, desiredPos, posLerp);

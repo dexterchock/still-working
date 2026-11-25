@@ -7,9 +7,9 @@ Shader "SonicTopography/TerrainPillars"
         _uArMode ("AR Mode Blend", Range(0, 1)) = 0.0
         _uArOcclusionEnabled ("AR Depth Occlusion", Float) = 1.0
         _uArBaseHeight ("AR Base Height", Float) = 0.045
-        _uArSurfaceLiftWorld ("AR Surface Lift (m)", Float) = 0.0018
+        _uArSurfaceLiftWorld ("AR Surface Lift (m)", Float) = 0.005
         _uArIdleBoost ("AR Idle Glow Boost", Float) = 0.32
-        _EnvironmentDepthBias ("Environment Depth Bias", Float) = 0.0
+        _EnvironmentDepthBias ("Environment Depth Bias", Float) = 0.025
     }
     SubShader
     {
