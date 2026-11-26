@@ -642,9 +642,9 @@ namespace SonicTopography
                 name = "SonicArLocalGlowCatcherMat",
                 enableInstancing = true
             };
-            _localGlowCatcherMat.SetFloat(IdLocalDiscFadeRadius, 1.6f);
+            _localGlowCatcherMat.SetFloat(IdLocalDiscFadeRadius, 1.45f);
 
-            _localGlowCatcherMesh = CreateLocalGlowDiscMesh(2.6f, 48);
+            _localGlowCatcherMesh = CreateLocalGlowDiscMesh(1.0f, 48);
             _localGlowCatcherGo = new GameObject("SonicArLocalGlowCatcher");
             _localGlowCatcherGo.transform.SetParent(_mrInfraRoot.transform, false);
             MeshFilter mf = _localGlowCatcherGo.AddComponent<MeshFilter>();
@@ -1118,12 +1118,15 @@ namespace SonicTopography
                         }
                         if (showFallbackDisc)
                         {
+                            float localMaxRange = Mathf.Clamp(platterWorldRadius * 2.5f + 0.35f, 0.75f, 1.55f);
+                            float fadeRadius = platterWorldRadius + localMaxRange;
                             _localGlowCatcherGo.transform.SetPositionAndRotation(
                                 platterPos - upN * (SurfaceSnapClearanceMeters - 0.002f),
                                 Quaternion.FromToRotation(Vector3.up, upN));
+                            _localGlowCatcherGo.transform.localScale = Vector3.one * (fadeRadius * 1.06f);
                             if (_localGlowCatcherMat != null)
                             {
-                                _localGlowCatcherMat.SetFloat(IdLocalDiscFadeRadius, Mathf.Clamp(platterWorldRadius * 3.4f, 0.85f, 2.35f));
+                                _localGlowCatcherMat.SetFloat(IdLocalDiscFadeRadius, fadeRadius);
                             }
                         }
                     }

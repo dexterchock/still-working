@@ -90,18 +90,6 @@ Shader "SonicTopography/RoomLightWash"
                 return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
             }
 
-            // Soft cloudy organic caustic pattern for ceiling bounce (never sharp rings)
-            float organicCaustic2D(float2 uv, float t)
-            {
-                float2 driftA = float2(t * 0.13, -t * 0.09);
-                float2 driftB = float2(-t * 0.11, t * 0.15);
-                float n1 = valueNoise2D(uv * 1.35 + driftA);
-                float n2 = valueNoise2D(uv * 2.45 + driftB + float2(n1 * 0.85, -n1 * 0.65));
-                float n3 = valueNoise2D(uv * 0.72 - driftA * 0.60);
-                float combined = n1 * 0.42 + n2 * 0.38 + n3 * 0.20;
-                return smoothstep(0.20, 0.84, combined);
-            }
-
             struct Attributes
             {
                 float4 positionOS : POSITION;
@@ -165,45 +153,88 @@ Shader "SonicTopography/RoomLightWash"
                 float3 inPlaneDir = (radialDist > 0.0005) ? (inPlaneVec / radialDist) : platterRight;
                 float3 closestOnDisc = platterCenter + inPlaneDir * clampedRadial;
 
-                // True distance from room surface to closest edge/face of glowing slab
-                float3 fromDisc = input.posWorld - closestOnDisc;
-                float closestDist = length(fromDisc);
-
-                // Quick range cull for far room geometry so distant walls stay completely natural
-                float maxRange = clamp(2.20 + platterRadius * 1.80, 2.30, 4.00);
-                float maxCeilingHeight = 3.40;
-                if (closestDist >= maxRange && heightOnPlatter <= 0.15)
+                // Strictly local proximity range: far walls, ceiling, and distant furniture receive exact 0.0
+                float closestDist = length(input.posWorld - closestOnDisc);
+                float maxRange = clamp(platterRadius * 2.5 + 0.35, 0.75, 1.55);
+                if (closestDist >= maxRange)
                 {
                     return half4(0.0h, 0.0h, 0.0h, 0.0h);
                 }
-                if (closestDist >= maxCeilingHeight)
+
+                // C2-continuous zero-edge smooth window: fades to exact 0.0 with zero visible boundary
+                float tRange = saturate(closestDist / maxRange);
+                float wRange = 1.0 - tRange * tRange;
+                float smoothWindow = wRange * wRange * wRange;
+
+                // Steep physical inverse-square falloff (90% of visible glow within ~0.0-0.50m of slab edge)
+                float attenScale = clamp(platterRadius * 0.95, 0.22, 0.65);
+                float dNorm = closestDist / attenScale;
+                float invSq = 1.0 / (1.0 + dNorm * dNorm * 2.4);
+                float distAtten = invSq * smoothWindow;
+
+                // View vector & silhouette softening so MRUK plane edges never show hard glowing outlines
+                float3 viewDir = normalize(_WorldSpaceCameraPos.xyz - input.posWorld);
+                float nDotV = saturate(dot(surfN, viewDir));
+                float silhouetteFade = smoothstep(0.03, 0.20, nDotV);
+                if (silhouetteFade <= 0.001)
                 {
                     return half4(0.0h, 0.0h, 0.0h, 0.0h);
                 }
 
                 // Slightly elevated effective LED pillar height for coplanar surfaces (desk/floor right around slab)
-                float emitLift = clamp(platterRadius * 0.18, 0.035, 0.14);
-                float nearPlaneWeight = saturate(1.0 - abs(heightOnPlatter) / max(0.20, platterRadius * 0.85));
+                float emitLift = clamp(platterRadius * 0.16, 0.030, 0.12);
+                float nearPlaneWeight = saturate(1.0 - abs(heightOnPlatter) / max(0.18, platterRadius * 0.80));
                 float3 effectiveEmitter = closestOnDisc + platterN * (emitLift * nearPlaneWeight);
                 float3 toEmitterVec = effectiveEmitter - input.posWorld;
                 float toEmitterDist = max(0.001, length(toEmitterVec));
                 float3 toEmitter = toEmitterVec / toEmitterDist;
 
-                // True directional Lambertian facing (zero back-face ambient leak)
-                // plus gentle grazing wrap ONLY for nearly coplanar surfaces at the platter base (floor/table it sits on)
+                // Strict directional Lambertian facing (zero back-face ambient leak)
+                // plus gentle grazing wrap ONLY for nearly coplanar base surfaces right next to the platter
                 float nDotL = dot(surfN, toEmitter);
                 float lambert = saturate(nDotL);
-                float coplanarSurface = saturate((dot(surfN, platterN) - 0.72) / 0.28)
-                                      * (1.0 - smoothstep(0.03, 0.26, abs(heightOnPlatter)));
-                float coplanarWrap = coplanarSurface * saturate(nDotL * 0.65 + 0.35);
-                float facing = max(lambert, coplanarWrap * 0.78);
+                float coplanarSurface = saturate((dot(surfN, platterN) - 0.78) / 0.22)
+                                      * (1.0 - smoothstep(0.02, 0.20, abs(heightOnPlatter)));
+                float coplanarWrap = coplanarSurface * saturate(nDotL * 0.62 + 0.38);
+                float diffuseFacing = max(lambert, coplanarWrap * 0.72);
 
-                // View-grazing silhouette softening so MRUK plane edges never show hard glowing outlines
-                float3 viewDir = normalize(_WorldSpaceCameraPos.xyz - input.posWorld);
-                float nDotV = abs(dot(surfN, viewDir));
-                float silhouetteFade = smoothstep(0.04, 0.24, nDotV);
+                // Representative Point disc area-light specular reflection (head-tracked glossy table/floor sheen)
+                float specLift = clamp(platterRadius * 0.24, 0.055, 0.16);
+                float3 specDiscCenter = platterCenter + platterN * specLift;
+                float3 R = reflect(-viewDir, surfN);
+                float3 toDiscCenter = specDiscCenter - input.posWorld;
+                float planeNumer = dot(toDiscCenter, platterN);
+                float planeDenom = dot(R, platterN);
 
-                if (facing <= 0.001 || silhouetteFade <= 0.001)
+                float3 repPt;
+                if (abs(planeDenom) > 0.001 && (planeNumer / planeDenom) > 0.0)
+                {
+                    float tPlane = min(planeNumer / planeDenom, maxRange * 2.5);
+                    float3 hitPlane = input.posWorld + R * tPlane;
+                    float3 hitOffset = hitPlane - specDiscCenter;
+                    float hitRadial = length(hitOffset);
+                    float clampedHitR = min(hitRadial, platterRadius);
+                    repPt = specDiscCenter + ((hitRadial > 0.0005) ? (hitOffset * (clampedHitR / hitRadial)) : float3(0.0, 0.0, 0.0));
+                }
+                else
+                {
+                    float tRay = max(0.0, dot(toDiscCenter, R));
+                    float3 rayPt = input.posWorld + R * tRay;
+                    float3 relRay = rayPt - specDiscCenter;
+                    float3 inDiscRay = relRay - platterN * dot(relRay, platterN);
+                    float rayRadial = length(inDiscRay);
+                    float clampedRayR = min(rayRadial, platterRadius);
+                    repPt = specDiscCenter + ((rayRadial > 0.0005) ? (inDiscRay * (clampedRayR / rayRadial)) : float3(0.0, 0.0, 0.0));
+                }
+
+                float3 toRep = repPt - input.posWorld;
+                float repDist = max(0.02, length(toRep));
+                float3 Lspec = toRep / repDist;
+                float rawSpecNdotL = dot(surfN, Lspec);
+                // Strictly zero on back faces (rawSpecNdotL <= 0), smooth ramp at grazing angles
+                float specFacing = smoothstep(0.0, 0.18, rawSpecNdotL);
+
+                if (diffuseFacing <= 0.001 && specFacing <= 0.001)
                 {
                     return half4(0.0h, 0.0h, 0.0h, 0.0h);
                 }
@@ -221,10 +252,10 @@ Shader "SonicTopography/RoomLightWash"
                 warmCol = balanceThemeTint(warmCol);
                 rippleCol = balanceThemeTint(rippleCol);
 
-                // Smooth organic ripple/beat energy swell (NO sharp concentric rings!)
+                // Smooth wide organic ripple/beat energy swell (ZERO sharp concentric rings)
                 float colorRippleAcc = 0.0;
                 float whiteRippleAcc = 0.0;
-                float sideScale = max(0.65, platterRadius * 2.8);
+                float sideScale = max(0.50, platterRadius * 2.2);
                 [unroll]
                 for (int i = 0; i < 10; i++)
                 {
@@ -235,13 +266,13 @@ Shader "SonicTopography/RoomLightWash"
                         float rStrength = min(_uSonicRoomRipplePosTimeStrength[i].w, 1.8);
                         float age = max(0.0, uTime - rTime);
 
-                        if (age < 2.6)
+                        if (age < 2.4)
                         {
-                            float env = smoothstep(0.0, 0.16, age) * exp(-age * 1.35) * rStrength;
+                            float env = smoothstep(0.0, 0.16, age) * exp(-age * 1.45) * rStrength;
                             float3 rOriginWS = platterCenter + (platterRight * rPos.x + platterFwd * rPos.y) * platterScale;
                             float sideDist = length(input.posWorld - rOriginWS);
-                            // Wide directional proximity bias toward the ripple's side of the slab
-                            float sideBias = 0.55 + 0.45 * exp(-(sideDist * sideDist) / (sideScale * sideScale));
+                            float sideRatio = sideDist / sideScale;
+                            float sideBias = 0.55 + 0.45 * exp(-(sideRatio * sideRatio));
                             float swell = env * sideBias;
 
                             if (_uSonicRoomRippleState[i].y > 0.5)
@@ -255,74 +286,60 @@ Shader "SonicTopography/RoomLightWash"
                         }
                     }
                 }
-                float colorRipple = 1.0 - exp(-colorRippleAcc * 0.72);
-                float whiteRipple = 1.0 - exp(-whiteRippleAcc * 0.62);
+                float colorRipple = 1.0 - exp(-colorRippleAcc * 0.70);
+                float whiteRipple = 1.0 - exp(-whiteRippleAcc * 0.60);
                 float totalRipple = saturate(colorRipple * 0.60 + whiteRipple * 0.50);
 
-                // Overall luminous drive: calm breathing at idle, rich swell on beats & ripples
-                float idleDrive = 0.36 + 0.10 * idlePulse;
+                // Refined luminous drive: calm breathing at idle, organic swell on beats & ripples
+                float idleDrive = 0.34 + 0.08 * idlePulse;
                 float musicDrive = saturate(audioEnergy * 0.55 + bassEnergy * 0.45);
-                float totalDrive = idleDrive + musicDrive * 0.48 + totalRipple * 0.38;
+                float totalDrive = idleDrive + musicDrive * 0.46 + totalRipple * 0.36;
 
-                // Blend base theme tint with warm beat shift and ripple accent tint
+                // Soft diffuse tint with subtle organic variation
                 float2 planarCoord = float2(dot(inPlaneVec, platterRight), dot(inPlaneVec, platterFwd));
-                float softShimmer = valueNoise2D(planarCoord * (1.25 / max(0.35, platterRadius * 2.0)) + float2(uTime * 0.18, -uTime * 0.14));
-                float colorMix = saturate(warmth * 0.75 + bassEnergy * 0.20 + (softShimmer - 0.5) * 0.14);
-                float3 baseTint = lerp(coolCol, warmCol, colorMix);
-                baseTint = lerp(baseTint, rippleCol, saturate(colorRipple * 0.42));
-                baseTint = lerp(baseTint, lerp(rippleCol, float3(0.75, 0.84, 0.92), 0.45), saturate(whiteRipple * 0.32));
+                float softShimmer = valueNoise2D(planarCoord * (1.35 / max(0.30, platterRadius * 2.0)) + float2(uTime * 0.16, -uTime * 0.12));
+                float colorMix = saturate(warmth * 0.72 + bassEnergy * 0.22 + (softShimmer - 0.5) * 0.12);
+                float3 diffuseTint = lerp(coolCol, warmCol, colorMix);
+                diffuseTint = lerp(diffuseTint, rippleCol, saturate(colorRipple * 0.40));
+                diffuseTint = lerp(diffuseTint, lerp(rippleCol, float3(0.78, 0.86, 0.94), 0.45), saturate(whiteRipple * 0.30));
 
-                // 1. Physically-based inverse-square area-light bounce (tight luminous pool near slab, dark far walls)
-                float attenScale = clamp(platterRadius * 2.10, 0.50, 1.45);
-                float dNorm = closestDist / attenScale;
-                float invSq = 1.0 / (1.0 + dNorm * dNorm * 1.28);
-                float rangeRem = saturate(1.0 - closestDist / maxRange);
-                float rangeWindow = (rangeRem > 0.0001) ? pow(rangeRem, 1.75) : 0.0;
-                float distAtten = invSq * rangeWindow;
+                // 1. Tight local diffuse perimeter bounce pool
+                float diffuseShimmerMod = lerp(0.93, 1.07, softShimmer);
+                float diffuseScalar = totalDrive * distAtten * diffuseFacing * diffuseShimmerMod * 0.44;
+                float3 diffuseRgb = diffuseTint * diffuseScalar;
 
-                // Gentle downward pool lift directly beneath a floating slab (carpet glow like real suspended LED panel)
-                float belowFloating = smoothstep(-0.14, -0.45, heightOnPlatter) * saturate(dot(surfN, platterN));
-                float underRatio = radialDist / max(0.55, platterRadius * 1.9 + abs(heightOnPlatter) * 0.55);
-                float underCone = exp(-(underRatio * underRatio));
-                float underPoolBoost = 1.0 + belowFloating * underCone * 1.05;
+                // 2. View-dependent soft glossy specular reflection on nearby tables/floors (roughness ~0.38 + Schlick Fresnel)
+                float roughness = 0.38;
+                float alphaR = roughness * roughness;
+                float alphaPrime = saturate(alphaR + platterRadius / (2.5 * repDist + platterRadius));
+                float specExp = clamp(2.0 / max(0.02, alphaPrime * alphaPrime) - 2.0, 4.0, 26.0);
+                float rDotL = saturate(dot(R, Lspec));
+                float specLobe = (rDotL > 0.0001) ? pow(rDotL, specExp) : 0.0;
+                float normFactor = sqrt(alphaR / max(0.05, alphaPrime));
 
-                // Very subtle wide shimmer so floor/desk bounce feels softly alive without any rings
-                float floorShimmerMod = lerp(0.91, 1.09, softShimmer);
-                float bounceScalar = totalDrive * distAtten * facing * underPoolBoost * floorShimmerMod * 0.50;
-                float3 lightRgb = baseTint * bounceScalar;
+                // Schlick Fresnel: F = 0.04 + 0.96 * (1 - NdotV)^4 (NaN-free)
+                float oneMinusV = 1.0 - nDotV;
+                float oneMinusV2 = oneMinusV * oneMinusV;
+                float fresnel = 0.04 + 0.96 * (oneMinusV2 * oneMinusV2);
 
-                // 2. Organic cloudy ceiling caustic bounce directly above the platter (surfaces facing down toward slab)
-                float aboveHeight = max(0.0, heightOnPlatter);
-                float ceilingAlign = saturate((dot(surfN, -platterN) - 0.25) / 0.55);
-                float aboveMask = smoothstep(0.18, 0.55, aboveHeight) * ceilingAlign;
-                if (aboveMask > 0.002 && aboveHeight < maxCeilingHeight)
-                {
-                    float ceilHNorm = aboveHeight / 1.45;
-                    float ceilRem = saturate(1.0 - aboveHeight / maxCeilingHeight);
-                    float ceilHeightAtten = (1.0 / (1.0 + ceilHNorm * ceilHNorm))
-                                          * ((ceilRem > 0.0001) ? pow(ceilRem, 1.35) : 0.0);
-                    float coneRadius = platterRadius * 1.65 + aboveHeight * 0.72;
-                    float ceilRatio = radialDist / max(0.40, coneRadius);
-                    float ceilRadialFade = exp(-(ceilRatio * ceilRatio) * (0.95 + 0.15 * ceilRatio));
+                // Subtle reflected terrain texture modulation sampled at the representative point on the glowing disc
+                float3 repOffset = repPt - specDiscCenter;
+                float2 repDiscUv = float2(dot(repOffset, platterRight), dot(repOffset, platterFwd)) / max(0.08, platterRadius);
+                float repNoise = valueNoise2D(repDiscUv * 2.2 + float2(uTime * 0.22, -uTime * 0.18));
+                float3 specTint = lerp(diffuseTint, lerp(coolCol, warmCol, saturate(0.35 + repNoise * 0.55)), 0.45);
+                specTint = lerp(specTint, float3(0.85, 0.92, 1.0), 0.14 + 0.16 * whiteRipple);
 
-                    float2 ceilUv = planarCoord / max(0.55, coneRadius * 0.62);
-                    float causticRaw = organicCaustic2D(ceilUv, uTime * (1.0 + bassEnergy * 0.20));
-                    // Cloudy light patches with soft dark troughs, pulsing gently with bass/ripples
-                    float causticPattern = lerp(0.24, 1.0, causticRaw);
-                    float causticDrive = (0.34 + 0.08 * idlePulse + musicDrive * 0.52 + totalRipple * 0.42);
+                float specDistAtten = 1.0 / (1.0 + dNorm * dNorm * 1.65);
+                float specScalar = totalDrive * specDistAtten * smoothWindow * specFacing * fresnel * specLobe * normFactor
+                                 * lerp(0.84, 1.16, repNoise) * 1.38;
+                float3 specRgb = specTint * specScalar;
 
-                    float3 ceilTint = lerp(coolCol, baseTint, 0.55 + 0.30 * causticRaw);
-                    ceilTint = lerp(ceilTint, rippleCol, saturate(totalRipple * 0.35 * causticRaw));
-
-                    // Replace harsh flat ceiling fill with organic caustic bounce (avoid double-stacking with main bounce)
-                    float ceilStrength = aboveMask * ceilHeightAtten * ceilRadialFade * causticPattern * causticDrive * 0.46;
-                    lightRgb = lerp(lightRgb, lightRgb * 0.30 + ceilTint * ceilStrength, aboveMask);
-                }
+                float3 lightRgb = diffuseRgb + specRgb;
 
                 // Soft local disc boundary fade (only active on Depth-raycast snapped fallback catcher)
                 if (_uLocalDiscFadeRadius > 0.01)
                 {
-                    float discFade = 1.0 - smoothstep(_uLocalDiscFadeRadius * 0.35, _uLocalDiscFadeRadius * 0.92, radialDist);
+                    float discFade = 1.0 - smoothstep(_uLocalDiscFadeRadius * 0.50, _uLocalDiscFadeRadius * 0.95, radialDist);
                     discFade *= discFade;
                     lightRgb *= discFade;
                 }
@@ -330,17 +347,17 @@ Shader "SonicTopography/RoomLightWash"
                 // Apply silhouette softening, Room Glow slider, and visibility
                 lightRgb *= (silhouetteFade * glowIntensity * visibility);
 
-                // Soft photographic knee compression so high RoomGlow or loud drops NEVER paint opaque solid fog
-                lightRgb = lightRgb / (1.0 + lightRgb * 1.35);
+                // Soft photographic knee compression so high RoomGlow or loud drops stay refined & realistic
+                lightRgb = lightRgb / (1.0 + lightRgb * 1.25);
 
                 float peakLum = max(lightRgb.r, max(lightRgb.g, lightRgb.b));
-                if (peakLum <= 0.0005)
+                if (peakLum <= 0.0004)
                 {
                     return half4(0.0h, 0.0h, 0.0h, 0.0h);
                 }
 
-                // Low soft-capped premultiplied alpha preserves real Quest 3 passthrough room details, textures & shadows
-                float outAlpha = min(saturate(peakLum * 0.26), 0.22);
+                // Near-pure additive passthrough compositing: keeps >=94.5% of real Quest 3 camera feed untouched
+                float outAlpha = min(saturate(peakLum * 0.055), 0.055);
 
                 return half4((half3)lightRgb, (half)outAlpha);
             }
