@@ -120,6 +120,7 @@ namespace SonicTopography.Editor
                 projectConfig.sceneSupport = OVRProjectConfig.FeatureSupport.Supported;
                 projectConfig.anchorSupport = OVRProjectConfig.AnchorSupport.Enabled;
                 projectConfig.insightPassthroughSupport = OVRProjectConfig.FeatureSupport.Supported;
+                projectConfig.isPassthroughCameraAccessEnabled = true;
                 projectConfig.boundaryVisibilitySupport = OVRProjectConfig.FeatureSupport.Supported;
                 EditorUtility.SetDirty(projectConfig);
             }
@@ -402,6 +403,7 @@ namespace SonicTopography.Editor
                     EnsurePermission(doc, manifestRoot, androidNs, "com.oculus.permission.USE_SCENE");
                     EnsurePermission(doc, manifestRoot, androidNs, "com.oculus.permission.USE_ANCHOR_API");
                     EnsurePermission(doc, manifestRoot, androidNs, "com.oculus.permission.BOUNDARY_VISIBILITY");
+                    EnsurePermission(doc, manifestRoot, androidNs, "horizonos.permission.HEADSET_CAMERA");
                     EnsureOptionalFeature(doc, manifestRoot, androidNs, "com.oculus.feature.PASSTHROUGH");
 
                     XmlNode appNode = manifestRoot.SelectSingleNode("application");

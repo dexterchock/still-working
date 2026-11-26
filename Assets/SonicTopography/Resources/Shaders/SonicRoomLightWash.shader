@@ -40,6 +40,17 @@ Shader "SonicTopography/RoomLightWash"
             SAMPLER(sampler_uSonicTerrainEmissionTex);
             float _uSonicRoomHasEmissionTex;
 
+            // Stereo Passthrough Camera Access (PCA) real-surface albedo relighting uniforms
+            TEXTURE2D(_uSonicPcaTexL);
+            SAMPLER(sampler_uSonicPcaTexL);
+            TEXTURE2D(_uSonicPcaTexR);
+            SAMPLER(sampler_uSonicPcaTexR);
+            float4x4 _uSonicPcaWorldToCamL;
+            float4x4 _uSonicPcaWorldToCamR;
+            float4 _uSonicPcaProjL;
+            float4 _uSonicPcaProjR;
+            float4 _uSonicPcaFlags; // x = hasL, y = hasR, z = 1/resX, w = 1/resY
+
             float4 _uSonicRoomPlatterCenterWS;
             float4 _uSonicRoomPlatterNormalWS;
             float4 _uSonicRoomPlatterRightWS;
@@ -139,15 +150,18 @@ Shader "SonicTopography/RoomLightWash"
                 float3 inPlaneDir = (radialDist > 0.0005) ? (inPlaneVec / radialDist) : platterRight;
                 float3 closestOnDisc = platterCenter + inPlaneDir * clampedRadial;
 
-                // Strictly local proximity range: far walls, ceiling, and distant furniture receive exact 0.0
+                // Strictly local horizontal/ceiling range, with extended range for floors directly below a floating platter
                 float closestDist = length(input.posWorld - closestOnDisc);
-                float maxRange = clamp(platterRadius * 2.4 + 0.32, 0.72, 1.45);
-                if (closestDist >= maxRange)
+                float maxRange = clamp(platterRadius * 2.2 + 0.28, 0.70, 1.35);
+                bool isUnderFloating = (heightOnPlatter < -0.04 && dot(surfN, platterN) > 0.55);
+                float floatUnderMaxRange = clamp(platterRadius * 2.8 + 0.95, 1.45, 2.25);
+                float activeMaxRange = isUnderFloating ? max(maxRange, floatUnderMaxRange) : maxRange;
+                if (closestDist >= activeMaxRange)
                 {
                     return half4(0.0h, 0.0h, 0.0h, 0.0h);
                 }
 
-                // C2-continuous zero-edge smooth window: fades to exact 0.0 with zero visible boundary
+                // C2-continuous zero-edge smooth window for local horizontal/ceiling bounce
                 float tRange = saturate(closestDist / maxRange);
                 float wRange = 1.0 - tRange * tRange;
                 float smoothWindow = wRange * wRange * wRange;
@@ -192,128 +206,190 @@ Shader "SonicTopography/RoomLightWash"
 
                 // =========================================================================
                 // 1. SPATIALLY-VARYING HIGH-CONTRAST PROXIMITY BOUNCE LIGHT
-                //    Samples live 64x64 mipmapped terrain emission map at distance-proportional LOD:
-                //    bright rim peaks cast vivid local pools; dark valleys stay dark!
+                //    Crisp 64x64 mipmapped emission sampling + tight grounded reach +
+                //    extended floating under-platter floor projection
                 // =========================================================================
-                // Pull emitter UV slightly inward (~10%) from rim so perimeter bounce catches bright edge pillars
                 float emitterRadial = min(radialDist, platterRadius * 0.90);
                 float3 emitterPlanarWS = inPlaneDir * emitterRadial;
                 float2 emitterUV = float2(dot(emitterPlanarWS, platterRight), dot(emitterPlanarWS, platterFwd))
                                  / (2.0 * platterRadius) + 0.5;
 
-                // Tight contact zone (0..0.20m): mip 1.4..2.4; wider bounce (0.20..0.95m): climbs to mip 3.5..5.4
                 float contactBlend = saturate(closestDist / max(0.20, platterRadius * 0.65));
                 float wideBlend = saturate((closestDist - 0.18) / max(0.35, maxRange - 0.18));
                 float bounceLod = lerp(1.45, 2.45, contactBlend) + wideBlend * 2.95;
                 float3 bounceEmission = boostContrastSubtle(sampleTerrainEmission(emitterUV, bounceLod, fallbackCol));
 
-                // Tighter grounded perimeter contact spill on coplanar floors/tables
-                float contactRange = clamp(platterRadius * 0.72, 0.17, 0.30);
+                // Much tighter grounded perimeter contact spill on coplanar floors/tables
+                float contactRange = clamp(platterRadius * 0.42, 0.09, 0.19);
                 float contactT = saturate(closestDist / contactRange);
                 float oneMinusContact = max(0.0, 1.0 - contactT);
-                float contactFalloff = (oneMinusContact > 0.0001) ? pow(oneMinusContact, 2.35) : 0.0;
+                float contactFalloff = (oneMinusContact > 0.0001) ? pow(oneMinusContact, 2.5) : 0.0;
                 float contactSpill = coplanarSurface * contactFalloff * (1.0 - smoothstep(0.0, platterRadius * 0.35, max(0.0, platterRadius - radialDist)));
 
                 float3 diffuseRgb = bounceEmission * (distAtten * diffuseFacing * 0.42 + contactSpill * 0.46);
 
-                // Under-platter spatially-varying projection when floating above a floor/table (heightOnPlatter < -0.04)
-                float belowMask = smoothstep(-0.04, -0.22, heightOnPlatter) * saturate(dot(surfN, platterN));
+                // Extended under-platter spatially-varying projection when floating above a floor/table
+                float belowMask = (1.0 - smoothstep(-0.22, -0.04, heightOnPlatter)) * saturate((dot(surfN, platterN) - 0.55) / 0.45);
                 if (belowMask > 0.002)
                 {
                     float absH = abs(heightOnPlatter);
                     float2 underUV = float2(dot(inPlaneVec, platterRight), dot(inPlaneVec, platterFwd))
                                    / (2.0 * platterRadius) + 0.5;
-                    float underConeR = platterRadius * 1.15 + absH * 0.65;
+                    float underConeR = platterRadius * 1.15 + absH * 0.72;
                     float underRadialFade = 1.0 - smoothstep(platterRadius * 0.72, underConeR, radialDist);
-                    float underLod = lerp(1.4, 5.1, saturate(absH / max(0.35, maxRange * 0.85)));
-                    float3 underEmission = sampleTerrainEmission(underUV, underLod, fallbackCol);
-                    diffuseRgb = lerp(diffuseRgb, underEmission * (distAtten * lambert * underRadialFade * 0.62), belowMask * underRadialFade);
+                    float underLod = lerp(1.4, 5.1, saturate(absH / max(0.35, floatUnderMaxRange * 0.85)));
+                    float3 underEmission = boostContrastSubtle(sampleTerrainEmission(underUV, underLod, fallbackCol));
+
+                    float tUnder = saturate(closestDist / floatUnderMaxRange);
+                    float wUnder = 1.0 - tUnder * tUnder;
+                    float smoothWindowUnder = wUnder * wUnder * wUnder;
+                    float attenScaleUnder = clamp(platterRadius * 1.35, 0.35, 0.85);
+                    float dNormUnder = closestDist / attenScaleUnder;
+                    float distAttenUnder = (1.0 / (1.0 + dNormUnder * dNormUnder * 1.45)) * smoothWindowUnder;
+
+                    diffuseRgb = lerp(diffuseRgb, underEmission * (distAttenUnder * lambert * underRadialFade * 0.58), belowMask * underRadialFade);
                 }
 
                 // =========================================================================
                 // 2. TRUE DISTANCE-BLURRED GLOSSY REFLECTION OF THE LIVE TERRAIN
-                //    (Reddit Mario tabletop / glossy floor tile effect!)
                 // =========================================================================
                 float3 reflRgb = float3(0.0, 0.0, 0.0);
-                float3 R = reflect(-viewDir, surfN);
-                float canopyLift = clamp(platterRadius * 0.10, 0.015, 0.06);
-                float3 canopyCenter = platterCenter + platterN * canopyLift;
-
-                float3 toCanopy = canopyCenter - input.posWorld;
-                float rNumer = dot(toCanopy, platterN);
-                float rDenom = dot(R, platterN);
-
-                // Intersect reflected ray with elevated glowing terrain canopy plane (forward hits only)
-                float tRefl = -1.0;
-                if (abs(rDenom) > 0.001)
+                if (smoothWindow > 0.001)
                 {
-                    tRefl = rNumer / rDenom;
-                }
+                    float3 R = reflect(-viewDir, surfN);
+                    float canopyLift = clamp(platterRadius * 0.10, 0.015, 0.06);
+                    float3 canopyCenter = platterCenter + platterN * canopyLift;
 
-                float3 reflHitWS;
-                bool hasPlaneHit = (tRefl > 0.0 && tRefl < maxRange * 2.5);
-                if (hasPlaneHit)
-                {
-                    reflHitWS = input.posWorld + R * tRefl;
-                }
-                else
-                {
-                    // Fallback for grazing rays: closest point on reflected ray to canopy center
-                    float tClosest = max(0.0, dot(toCanopy, R));
-                    tRefl = tClosest;
-                    reflHitWS = input.posWorld + R * tClosest;
-                }
+                    float3 toCanopy = canopyCenter - input.posWorld;
+                    float rNumer = dot(toCanopy, platterN);
+                    float rDenom = dot(R, platterN);
 
-                float3 hitRel = reflHitWS - canopyCenter;
-                float3 hitInPlane = hitRel - platterN * dot(hitRel, platterN);
-                float hitRadial = length(hitInPlane);
-
-                // Representative Point clamp onto the glowing disc (preserves sharp mirror hits inside disc
-                // AND realistic glossy roughness tail right outside the rim on tabletops & shiny floor tiles)
-                float clampedHitR = min(hitRadial, platterRadius * 0.94);
-                float3 clampedInPlane = (hitRadial > 0.0005) ? (hitInPlane * (clampedHitR / hitRadial)) : float3(0.0, 0.0, 0.0);
-                float3 repHitWS = canopyCenter + clampedInPlane;
-
-                float3 toRep = repHitWS - input.posWorld;
-                float repDist = max(0.015, length(toRep));
-                float3 Lrefl = toRep / repDist;
-
-                // Strictly zero on back faces (dot(surfN, Lrefl) <= 0)
-                float reflFacing = smoothstep(0.0, 0.14, dot(surfN, Lrefl));
-
-                if (reflFacing > 0.001)
-                {
-                    // Angular glossy lobe: 1.0 when ray hits inside the glowing disc, smooth roughness falloff outside rim
-                    float rDotL = saturate(dot(R, Lrefl));
-                    float glossExp = lerp(18.0, 7.5, saturate(repDist / max(0.35, platterRadius * 2.4)));
-                    float glossLobe = (rDotL > 0.0001) ? pow(rDotL, glossExp) : 0.0;
-
-                    if (glossLobe > 0.002)
+                    float tRefl = -1.0;
+                    if (abs(rDenom) > 0.001)
                     {
-                        float2 reflUV = float2(dot(clampedInPlane, platterRight), dot(clampedInPlane, platterFwd))
-                                      / (2.0 * platterRadius) + 0.5;
+                        tRefl = rNumer / rDenom;
+                    }
 
-                        // Distance-proportional mip LOD: crisp high-contrast hotspots near rim (0.8..1.8),
-                        // climbing smoothly to soft glossy blur (up to 5.0) with distance and off-axis angle
-                        float distFactor = saturate(repDist / max(0.32, platterRadius * 2.6));
-                        float offAxisBlur = (1.0 - rDotL) * 4.5;
-                        float reflLod = clamp(lerp(0.80, 4.85, sqrt(distFactor)) + offAxisBlur, 0.75, 5.25);
+                    float3 reflHitWS;
+                    bool hasPlaneHit = (tRefl > 0.0 && tRefl < maxRange * 2.5);
+                    if (hasPlaneHit)
+                    {
+                        reflHitWS = input.posWorld + R * tRefl;
+                    }
+                    else
+                    {
+                        float tClosest = max(0.0, dot(toCanopy, R));
+                        tRefl = tClosest;
+                        reflHitWS = input.posWorld + R * tClosest;
+                    }
 
-                        float3 reflEmission = boostContrastSubtle(sampleTerrainEmission(reflUV, reflLod, fallbackCol));
+                    float3 hitRel = reflHitWS - canopyCenter;
+                    float3 hitInPlane = hitRel - platterN * dot(hitRel, platterN);
+                    float hitRadial = length(hitInPlane);
 
-                        // Schlick Fresnel: F = 0.06 + 0.94 * (1 - NdotV)^3.5 (NaN-free)
-                        float oneMinusV = max(0.0, 1.0 - nDotV);
-                        float fresnel = 0.06 + 0.94 * ((oneMinusV > 0.0001) ? pow(oneMinusV, 3.5) : 0.0);
+                    float clampedHitR = min(hitRadial, platterRadius * 0.94);
+                    float3 clampedInPlane = (hitRadial > 0.0005) ? (hitInPlane * (clampedHitR / hitRadial)) : float3(0.0, 0.0, 0.0);
+                    float3 repHitWS = canopyCenter + clampedInPlane;
 
-                        float reflDistAtten = 1.0 / (1.0 + dNorm * dNorm * 1.45);
-                        reflRgb = reflEmission * (fresnel * glossLobe * reflFacing * reflDistAtten * smoothWindow * 0.95);
+                    float3 toRep = repHitWS - input.posWorld;
+                    float repDist = max(0.015, length(toRep));
+                    float3 Lrefl = toRep / repDist;
+
+                    float reflFacing = smoothstep(0.0, 0.14, dot(surfN, Lrefl));
+
+                    if (reflFacing > 0.001)
+                    {
+                        float rDotL = saturate(dot(R, Lrefl));
+                        float glossExp = lerp(18.0, 7.5, saturate(repDist / max(0.35, platterRadius * 2.4)));
+                        float glossLobe = (rDotL > 0.0001) ? pow(rDotL, glossExp) : 0.0;
+
+                        if (glossLobe > 0.002)
+                        {
+                            float2 reflUV = float2(dot(clampedInPlane, platterRight), dot(clampedInPlane, platterFwd))
+                                          / (2.0 * platterRadius) + 0.5;
+
+                            float distFactor = saturate(repDist / max(0.32, platterRadius * 2.6));
+                            float offAxisBlur = (1.0 - rDotL) * 4.5;
+                            float reflLod = clamp(lerp(0.80, 4.85, sqrt(distFactor)) + offAxisBlur, 0.75, 5.25);
+
+                            float3 reflEmission = boostContrastSubtle(sampleTerrainEmission(reflUV, reflLod, fallbackCol));
+
+                            float oneMinusV = max(0.0, 1.0 - nDotV);
+                            float fresnel = 0.06 + 0.94 * ((oneMinusV > 0.0001) ? pow(oneMinusV, 3.5) : 0.0);
+
+                            float reflDistAtten = 1.0 / (1.0 + dNorm * dNorm * 1.45);
+                            reflRgb = reflEmission * (fresnel * glossLobe * reflFacing * reflDistAtten * smoothWindow * 0.95);
+                        }
                     }
                 }
 
-                // Tighter grounded reach strictly when snapped coplanar to floor/table (floating/ceiling = 1.0)
-                float coplanarReach = clamp(platterRadius * 0.85, 0.20, 0.42);
-                float coplanarFade = exp(-(closestDist / coplanarReach) * 1.75)
-                                   * (1.0 - smoothstep(coplanarReach * 0.85, coplanarReach * 1.65, closestDist));
+                // =========================================================================
+                // 3. TRUE PHYSICAL REAL-SURFACE ALBEDO RELIGHTING VIA STEREO PCA
+                //    RealSurfaceAlbedo * VirtualLight: dark mats/grout stay dark, light tiles
+                //    tint vividly by real surface color, tile seams break up glossy reflection
+                // =========================================================================
+                bool hasL = _uSonicPcaFlags.x > 0.5;
+                bool hasR = _uSonicPcaFlags.y > 0.5;
+                if (hasL || hasR)
+                {
+                    bool useRight = (unity_StereoEyeIndex > 0) ? hasR : (!hasL && hasR);
+                    float4x4 worldToCam = useRight ? _uSonicPcaWorldToCamR : _uSonicPcaWorldToCamL;
+                    float4 proj = useRight ? _uSonicPcaProjR : _uSonicPcaProjL;
+
+                    float3 pCam = mul(worldToCam, float4(input.posWorld, 1.0)).xyz;
+                    float2 pcaUV = (pCam.z > 0.08) ? ((pCam.xy / pCam.z) * proj.xy + proj.zw) : float2(-1.0, -1.0);
+                    float pcaEdge = step(0.08, pCam.z)
+                                  * smoothstep(0.01, 0.07, pcaUV.x) * (1.0 - smoothstep(0.93, 0.99, pcaUV.x))
+                                  * smoothstep(0.01, 0.07, pcaUV.y) * (1.0 - smoothstep(0.93, 0.99, pcaUV.y));
+
+                    if (pcaEdge > 0.001)
+                    {
+                        float2 stepUV = _uSonicPcaFlags.zw * 1.5;
+                        float3 camRgb;
+                        float3 camN, camS, camE, camW;
+                        if (useRight)
+                        {
+                            camRgb = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV, 0.0).rgb;
+                            camN = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV + float2(0.0, stepUV.y), 0.0).rgb;
+                            camS = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV - float2(0.0, stepUV.y), 0.0).rgb;
+                            camE = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV + float2(stepUV.x, 0.0), 0.0).rgb;
+                            camW = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV - float2(stepUV.x, 0.0), 0.0).rgb;
+                        }
+                        else
+                        {
+                            camRgb = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV, 0.0).rgb;
+                            camN = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV + float2(0.0, stepUV.y), 0.0).rgb;
+                            camS = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV - float2(0.0, stepUV.y), 0.0).rgb;
+                            camE = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV + float2(stepUV.x, 0.0), 0.0).rgb;
+                            camW = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV - float2(stepUV.x, 0.0), 0.0).rgb;
+                        }
+
+                        const float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
+                        float camLuma = dot(camRgb, lumaWeights);
+                        float lumaN = dot(camN, lumaWeights);
+                        float lumaS = dot(camS, lumaWeights);
+                        float lumaE = dot(camE, lumaWeights);
+                        float lumaW = dot(camW, lumaWeights);
+
+                        // Diffuse albedo modulation (NaN-safe pow) + 1.22x compensation so bright tiles stay vivid
+                        float3 estAlbedo = lerp(camLuma.xxx, camRgb, 0.65);
+                        float3 scaledAlbedo = max(float3(1e-5, 1e-5, 1e-5), saturate(estAlbedo * 2.55));
+                        float3 diffuseSurfaceMod = pow(scaledAlbedo, 0.92);
+
+                        // Glossy specular modulation: keeps Fresnel on dark glossy tiles, breaks on grout seams & ultra-dark matte fabric
+                        float neighborAvg = 0.25 * (lumaN + lumaS + lumaE + lumaW);
+                        float seamBreak = 1.0 - saturate(abs(camLuma - neighborAvg) * 6.0) * 0.45;
+                        float specSurfaceMod = (0.28 + 0.72 * smoothstep(0.008, 0.065, camLuma)) * seamBreak;
+
+                        diffuseRgb *= lerp(float3(1.0, 1.0, 1.0), diffuseSurfaceMod * 1.22, pcaEdge);
+                        reflRgb *= lerp(1.0, specSurfaceMod, pcaEdge);
+                    }
+                }
+
+                // Tight grounded distance envelope strictly when snapped coplanar to floor/table (floating/ceiling = 1.0)
+                float coplanarReach = clamp(platterRadius * 0.44, 0.10, 0.21);
+                float coplanarFade = exp(-(closestDist / coplanarReach) * 2.35)
+                                   * (1.0 - smoothstep(coplanarReach * 0.60, coplanarReach * 1.30, closestDist));
                 float groundedEnvelope = lerp(1.0, coplanarFade, coplanarSurface);
 
                 float3 lightRgb = (diffuseRgb + reflRgb) * groundedEnvelope;
@@ -335,13 +411,22 @@ Shader "SonicTopography/RoomLightWash"
                 tonemapped += float3(0.05, 0.05, 0.06) * smoothstep(0.50, 1.40, hotPeak);
 
                 float peakLum = max(tonemapped.r, max(tonemapped.g, tonemapped.b));
-                if (peakLum <= 0.0004)
+
+                // Near-zero glow premultiplied alpha preserves 97.5-100% of real floor texture & grain
+                float lightAlpha = min(saturate(peakLum * 0.020), 0.025);
+
+                // Subtle multiplicative contact shadow right at grounded slab rim where rim emission is low
+                float contactAo = coplanarSurface
+                                * (1.0 - smoothstep(0.0, 0.028, closestDist))
+                                * 0.24
+                                * (1.0 - saturate(peakLum * 1.6))
+                                * (silhouetteFade * visibility);
+                float outAlpha = max(lightAlpha, contactAo);
+
+                if (peakLum <= 0.0004 && outAlpha <= 0.0004)
                 {
                     return half4(0.0h, 0.0h, 0.0h, 0.0h);
                 }
-
-                // Ultra-low premultiplied alpha preserves 92-100% of real Quest 3 passthrough textures & shadows
-                float outAlpha = min(saturate(peakLum * 0.045), 0.08);
 
                 return half4((half3)tonemapped, (half)outAlpha);
             }
