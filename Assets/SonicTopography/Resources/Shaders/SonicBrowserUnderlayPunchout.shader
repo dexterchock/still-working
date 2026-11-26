@@ -4,7 +4,7 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
     {
         [PerRendererData] _MainTex ("Sprite Texture", 2D) = "white" {}
         _Color ("Tint", Color) = (1,1,1,1)
-        _BorderInset ("Glass Border Inset (px)", Float) = 0.0
+        _BorderInset ("Glass Border Inset (px)", Float) = 1.0
 
         _StencilComp ("Stencil Comparison", Float) = 8
         _Stencil ("Stencil ID", Float) = 0
@@ -40,7 +40,7 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
         Lighting Off
         ZWrite Off
         ZTest [unity_GUIZTestMode]
-        Blend Zero SrcAlpha, One Zero
+        Blend Zero SrcAlpha, Zero SrcAlpha
         ColorMask RGBA
 
         Pass
@@ -93,8 +93,8 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
 
                 bool hasCustomSize = (IN.uv2.x > 0.5 && IN.uv2.y > 0.5);
                 OUT.rectUV = hasCustomSize ? IN.uv1 : IN.uv0;
-                OUT.rectSize = hasCustomSize ? IN.uv2 : float2(932.0, 536.0);
-                OUT.shapeParam = hasCustomSize ? IN.uv3 : float4(24.0, 10.0, 0.0, 0.0);
+                OUT.rectSize = hasCustomSize ? IN.uv2 : float2(960.0, 564.0);
+                OUT.shapeParam = hasCustomSize ? IN.uv3 : float4(38.0, 10.0, 0.0, 0.0);
                 return OUT;
             }
 

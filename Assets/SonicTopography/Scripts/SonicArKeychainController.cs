@@ -13,9 +13,9 @@ namespace SonicTopography
     /// </summary>
     public class SonicArKeychainController : MonoBehaviour
     {
-        private const float CanvasWidth = 540f;
+        private const float CanvasWidth = 548f;
         private const float CanvasHeight = 104f;
-        private const float WorldScale = 0.00064f; // ~34.6cm x 6.7cm physical floating card
+        private const float WorldScale = 0.00064f; // ~35.1cm x 6.7cm physical floating card
 
         private static readonly Color ColTextPrimary = new Color(0.98f, 0.98f, 0.98f, 0.98f);
         private static readonly Color ColTextSecondary = new Color(0.72f, 0.72f, 0.72f, 0.82f);
@@ -24,6 +24,7 @@ namespace SonicTopography
         private SonicMusicPlayerController _player;
         private SonicWebBrowserManager _browser;
         private SonicTopographyVisualizer _visualizer;
+        private SonicSpatialUIManager _spatialUI;
 
         private GameObject _rootGo;
         private Canvas _canvas;
@@ -40,6 +41,7 @@ namespace SonicTopography
         private SonicGlassSurface _glassSurface;
 
         private bool _hasPoseInitialized = false;
+        private float _mainUiHideBlend = 1f;
         private float _nextMetaSyncTime = 0f;
 
         public bool IsVisible => _rootGo != null && _rootGo.activeSelf && _canvasGroup != null && _canvasGroup.alpha > 0.25f;
@@ -95,8 +97,16 @@ namespace SonicTopography
         {
             if (_mr == null || _rootGo == null) return;
 
+            if (_spatialUI == null)
+            {
+                _spatialUI = FindFirstObjectByType<SonicSpatialUIManager>(FindObjectsInactive.Include);
+            }
+
             float blend = _mr.ArBlend;
-            bool shouldBeActive = blend > 0.15f || _mr.IsArMode;
+            bool mainPanelShowing = _spatialUI != null && _spatialUI.IsUIVisible;
+            _mainUiHideBlend = Mathf.MoveTowards(_mainUiHideBlend, mainPanelShowing ? 0f : 1f, Time.unscaledDeltaTime * 5.0f);
+
+            bool shouldBeActive = (blend > 0.15f || _mr.IsArMode) && _mainUiHideBlend > 0.01f;
             if (_rootGo.activeSelf != shouldBeActive)
             {
                 _rootGo.SetActive(shouldBeActive);
@@ -109,10 +119,10 @@ namespace SonicTopography
 
             if (!shouldBeActive) return;
 
-            float fadeAlpha = Mathf.InverseLerp(0.25f, 0.92f, blend);
+            float fadeAlpha = Mathf.InverseLerp(0.25f, 0.92f, blend) * _mainUiHideBlend;
             _canvasGroup.alpha = fadeAlpha;
-            _canvasGroup.interactable = fadeAlpha > 0.65f;
-            _canvasGroup.blocksRaycasts = fadeAlpha > 0.65f;
+            _canvasGroup.interactable = !mainPanelShowing && fadeAlpha > 0.65f;
+            _canvasGroup.blocksRaycasts = !mainPanelShowing && fadeAlpha > 0.65f;
 
             ComputeDockedPose(out Vector3 dockedPos, out Quaternion dockedRot);
             if (!_hasPoseInitialized)
@@ -331,10 +341,10 @@ namespace SonicTopography
             _glassSurface = bgGo.AddComponent<SonicGlassSurface>();
             _glassSurface.Configure(SonicSurfaceMode.FrostedBlurWindow, 52f, pill: true, border: 0.18f);
 
-            // 1. Smooth Analytical SDF Rounded Album Art Thumbnail (left side, 72x72, 16px margin)
-            GameObject artSlot = CreateUiRect("AlbumArtSlot", bgGo.transform, new Vector2(-218f, 0f), new Vector2(72f, 72f));
+            // 1. Smooth Analytical SDF Rounded Album Art Thumbnail (left side, 64x64 with breathing room around r=52 pill edge)
+            GameObject artSlot = CreateUiRect("AlbumArtSlot", bgGo.transform, new Vector2(-208f, 0f), new Vector2(64f, 64f));
 
-            GameObject artImgGo = CreateUiRect("AlbumArtImage", artSlot.transform, Vector2.zero, new Vector2(72f, 72f));
+            GameObject artImgGo = CreateUiRect("AlbumArtImage", artSlot.transform, Vector2.zero, new Vector2(64f, 64f));
             _albumArtImage = artImgGo.AddComponent<Image>();
             _albumArtImage.sprite = whiteSprite;
             _albumArtImage.type = Image.Type.Simple;
@@ -344,10 +354,10 @@ namespace SonicTopography
             _albumArtImage.enabled = false;
 
             _albumArtSurface = artImgGo.AddComponent<SonicGlassSurface>();
-            _albumArtSurface.Configure(SonicSurfaceMode.RoundedTexture, 20f, pill: false, border: 0.14f, squareCrop: true);
+            _albumArtSurface.Configure(SonicSurfaceMode.RoundedTexture, 16f, pill: false, border: 0.14f, squareCrop: true);
 
             // Fallback: rounded dark glass square with centered MusicNote icon
-            _albumArtFallbackGo = CreateUiRect("ArtFallback", artSlot.transform, Vector2.zero, new Vector2(72f, 72f));
+            _albumArtFallbackGo = CreateUiRect("ArtFallback", artSlot.transform, Vector2.zero, new Vector2(64f, 64f));
             Image fbBg = _albumArtFallbackGo.AddComponent<Image>();
             fbBg.sprite = whiteSprite;
             fbBg.type = Image.Type.Simple;
@@ -356,16 +366,16 @@ namespace SonicTopography
             fbBg.raycastTarget = false;
 
             SonicGlassSurface fbSurf = _albumArtFallbackGo.AddComponent<SonicGlassSurface>();
-            fbSurf.Configure(SonicSurfaceMode.SdfShape, 20f, pill: false, border: 0.12f);
+            fbSurf.Configure(SonicSurfaceMode.SdfShape, 16f, pill: false, border: 0.12f);
 
-            GameObject fbIconGo = CreateUiRect("MusicNoteIcon", _albumArtFallbackGo.transform, Vector2.zero, new Vector2(28f, 28f));
+            GameObject fbIconGo = CreateUiRect("MusicNoteIcon", _albumArtFallbackGo.transform, Vector2.zero, new Vector2(26f, 26f));
             Image fbIcon = fbIconGo.AddComponent<Image>();
             fbIcon.sprite = SonicUIIconGenerator.GetIcon(SonicIconType.MusicNote);
             fbIcon.color = ColTextSecondary;
             fbIcon.raycastTarget = false;
 
             // 2. Full Track Title + Subtitle with pixel-edge ellipsis and shared CJK font fallback
-            GameObject titleGo = CreateUiRect("Title", bgGo.transform, new Vector2(-41f, 14f), new Vector2(250f, 30f));
+            GameObject titleGo = CreateUiRect("Title", bgGo.transform, new Vector2(-35f, 14f), new Vector2(246f, 30f));
             _titleText = titleGo.AddComponent<TextMeshProUGUI>();
             _titleText.text = "AudioFloor";
             _titleText.fontSize = 18f;
@@ -377,7 +387,7 @@ namespace SonicTopography
             _titleText.raycastTarget = false;
             SonicSpatialUIManager.ApplySharedCJKFont(_titleText);
 
-            GameObject subGo = CreateUiRect("Subtitle", bgGo.transform, new Vector2(-41f, -14f), new Vector2(250f, 24f));
+            GameObject subGo = CreateUiRect("Subtitle", bgGo.transform, new Vector2(-35f, -14f), new Vector2(246f, 24f));
             _subtitleText = subGo.AddComponent<TextMeshProUGUI>();
             _subtitleText.text = "Ready";
             _subtitleText.fontSize = 14f;
@@ -393,7 +403,7 @@ namespace SonicTopography
             CreateGlassIconButton(
                 bgGo.transform,
                 "PrevBtn",
-                new Vector2(118f, 0f),
+                new Vector2(122f, 0f),
                 44f,
                 20f,
                 SonicIconType.Previous,
@@ -408,7 +418,7 @@ namespace SonicTopography
             CreateGlassIconButton(
                 bgGo.transform,
                 "PlayPauseBtn",
-                new Vector2(175f, 0f),
+                new Vector2(179f, 0f),
                 54f,
                 24f,
                 SonicIconType.Play,
@@ -423,7 +433,7 @@ namespace SonicTopography
             CreateGlassIconButton(
                 bgGo.transform,
                 "NextBtn",
-                new Vector2(232f, 0f),
+                new Vector2(236f, 0f),
                 44f,
                 20f,
                 SonicIconType.Next,

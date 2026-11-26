@@ -1,7 +1,17 @@
 package com.dexter.audiofloor;
 
 import android.app.Activity;
+import android.graphics.SurfaceTexture;
+import android.opengl.EGL14;
+import android.opengl.EGLConfig;
+import android.opengl.EGLContext;
+import android.opengl.EGLDisplay;
+import android.opengl.EGLSurface;
+import android.opengl.GLES11Ext;
+import android.opengl.GLES20;
+import android.opengl.Matrix;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Base64;
@@ -24,7 +34,12 @@ import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.WebExtension;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class SonicGeckoBrowserBridge {
     private static final String TAG = "SonicBrowser";
@@ -45,8 +60,9 @@ public class SonicGeckoBrowserBridge {
     private WebExtension.Port mPort;
 
     private Surface mSurface;
+    private RoundedSurfaceBlitter mBlitter;
     private int mSurfaceWidth = 1280;
-    private int mSurfaceHeight = 736;
+    private int mSurfaceHeight = 752;
     private boolean mSurfaceBound = false;
 
     private boolean mInitialized = false;
@@ -157,22 +173,53 @@ public class SonicGeckoBrowserBridge {
         return session;
     }
 
+    private void releaseBlitter() {
+        if (mBlitter != null) {
+            try {
+                mBlitter.release();
+            } catch (Throwable t) {
+                Log.w(TAG, "RoundedSurfaceBlitter release warning: " + t.getMessage());
+            }
+            mBlitter = null;
+        }
+    }
+
     private void bindSurfaceToActiveSessionIfReady() {
         if (mShutdown || mActiveSession == null || mSurface == null || !mSurface.isValid()) {
             return;
         }
         try {
+            if (mBlitter == null || !mBlitter.matches(mSurface, mSurfaceWidth, mSurfaceHeight)) {
+                releaseBlitter();
+                float radiusPx = 38.0f * (mSurfaceWidth / 960.0f);
+                RoundedSurfaceBlitter candidate = new RoundedSurfaceBlitter(mSurface, mSurfaceWidth, mSurfaceHeight, radiusPx);
+                if (candidate.isReady()) {
+                    mBlitter = candidate;
+                    Log.i(TAG, "RoundedSurfaceBlitter active (" + mSurfaceWidth + "x" + mSurfaceHeight + ", r=" + radiusPx + "px)");
+                } else {
+                    candidate.release();
+                    Log.w(TAG, "RoundedSurfaceBlitter failed to initialize; falling back to direct Surface");
+                }
+            }
+
+            Surface targetSurface = (mBlitter != null && mBlitter.isReady())
+                    ? mBlitter.getInputSurface()
+                    : mSurface;
+            if (targetSurface == null || !targetSurface.isValid()) {
+                targetSurface = mSurface;
+            }
+
             if (mDisplay == null) {
                 mDisplay = mActiveSession.acquireDisplay();
             }
             mDisplay.surfaceChanged(
-                    new GeckoDisplay.SurfaceInfo.Builder(mSurface)
+                    new GeckoDisplay.SurfaceInfo.Builder(targetSurface)
                             .size(mSurfaceWidth, mSurfaceHeight)
                             .build()
             );
             mSurfaceBound = true;
             mActiveSession.setActive(true);
-            Log.i(TAG, "attachSurface bound to GeckoDisplay (" + mSurfaceWidth + "x" + mSurfaceHeight + ")");
+            Log.i(TAG, "attachSurface bound to GeckoDisplay (" + mSurfaceWidth + "x" + mSurfaceHeight + ", rounded=" + (mBlitter != null) + ")");
         } catch (Throwable t) {
             Log.e(TAG, "Failed binding Surface to GeckoDisplay", t);
         }
@@ -204,13 +251,25 @@ public class SonicGeckoBrowserBridge {
     public void attachSurface(@Nullable Surface surface, int width, int height) {
         mUiHandler.post(() -> {
             if (mShutdown) return;
-            mSurface = surface;
-            if (width > 0) mSurfaceWidth = width;
-            if (height > 0) mSurfaceHeight = height;
+            int nextW = width > 0 ? width : mSurfaceWidth;
+            int nextH = height > 0 ? height : mSurfaceHeight;
+            boolean needsRecreate = (surface != mSurface) || (nextW != mSurfaceWidth) || (nextH != mSurfaceHeight);
+
             if (surface == null) {
                 detachDisplayFromSession(mActiveSession);
+                releaseBlitter();
+                mSurface = null;
                 return;
             }
+
+            if (needsRecreate && mBlitter != null) {
+                detachDisplayFromSession(mActiveSession);
+                releaseBlitter();
+            }
+
+            mSurface = surface;
+            mSurfaceWidth = nextW;
+            mSurfaceHeight = nextH;
             bindSurfaceToActiveSessionIfReady();
         });
     }
@@ -516,6 +575,7 @@ public class SonicGeckoBrowserBridge {
                 } catch (Throwable ignored) {}
                 mPrimarySession = null;
             }
+            releaseBlitter();
             mActiveSession = null;
             mPort = null;
             mSurface = null;
@@ -774,4 +834,334 @@ public class SonicGeckoBrowserBridge {
             }
         }
     };
+
+    /**
+     * Lightweight on-demand GLES 2.0 SurfaceTexture -> EGL14 rounded-corner blitter.
+     * Applies per-pixel premultiplied rounded-rect alpha masking to GeckoView's output frames
+     * before presenting them to OVROverlay's external Surface, so frameless 960x564 (r=38px)
+     * browser corners blend cleanly in both AR passthrough and VR.
+     */
+    private static final class RoundedSurfaceBlitter {
+        private static final String VERT_SHADER =
+                "attribute vec2 aPos;\n" +
+                "attribute vec2 aUv;\n" +
+                "uniform mat4 uStMatrix;\n" +
+                "varying vec2 vQuadUv;\n" +
+                "varying vec2 vTexUv;\n" +
+                "void main() {\n" +
+                "    gl_Position = vec4(aPos, 0.0, 1.0);\n" +
+                "    vQuadUv = aUv;\n" +
+                "    vTexUv = (uStMatrix * vec4(aUv, 0.0, 1.0)).xy;\n" +
+                "}\n";
+
+        private static final String FRAG_SHADER =
+                "#extension GL_OES_EGL_image_external : require\n" +
+                "precision mediump float;\n" +
+                "varying vec2 vQuadUv;\n" +
+                "varying vec2 vTexUv;\n" +
+                "uniform samplerExternalOES uTex;\n" +
+                "uniform vec2 uSize;\n" +
+                "uniform float uRadius;\n" +
+                "void main() {\n" +
+                "    vec2 halfSize = uSize * 0.5;\n" +
+                "    vec2 localPx = (vQuadUv - 0.5) * uSize;\n" +
+                "    vec2 q = abs(localPx) - (halfSize - 0.5) + uRadius;\n" +
+                "    float dist = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - uRadius;\n" +
+                "    float alpha = 1.0 - smoothstep(-0.75, 0.75, dist);\n" +
+                "    vec4 c = texture2D(uTex, vTexUv);\n" +
+                "    gl_FragColor = vec4(c.rgb * alpha, alpha);\n" +
+                "}\n";
+
+        private static final float[] QUAD_VERTS = {
+                -1.0f, -1.0f, 0.0f, 0.0f,
+                 1.0f, -1.0f, 1.0f, 0.0f,
+                -1.0f,  1.0f, 0.0f, 1.0f,
+                 1.0f,  1.0f, 1.0f, 1.0f
+        };
+
+        private final Surface mOutputSurface;
+        private final int mWidth;
+        private final int mHeight;
+        private final float mRadiusPx;
+        private final HandlerThread mThread;
+        private final Handler mHandler;
+        private final FloatBuffer mQuadBuffer;
+        private final float[] mStMatrix = new float[16];
+
+        private EGLDisplay mEglDisplay = EGL14.EGL_NO_DISPLAY;
+        private EGLContext mEglContext = EGL14.EGL_NO_CONTEXT;
+        private EGLSurface mEglSurface = EGL14.EGL_NO_SURFACE;
+        private int mProgram = 0;
+        private int mOesTexId = 0;
+        private int mAttrPos = -1;
+        private int mAttrUv = -1;
+        private int mUniStMatrix = -1;
+        private int mUniTex = -1;
+        private int mUniSize = -1;
+        private int mUniRadius = -1;
+
+        private SurfaceTexture mSurfaceTexture;
+        private Surface mInputSurface;
+        private volatile boolean mReady = false;
+        private volatile boolean mReleased = false;
+
+        RoundedSurfaceBlitter(@NonNull Surface outputSurface, int width, int height, float radiusPx) {
+            mOutputSurface = outputSurface;
+            mWidth = width;
+            mHeight = height;
+            mRadiusPx = radiusPx;
+
+            ByteBuffer bb = ByteBuffer.allocateDirect(QUAD_VERTS.length * 4).order(ByteOrder.nativeOrder());
+            mQuadBuffer = bb.asFloatBuffer();
+            mQuadBuffer.put(QUAD_VERTS);
+            mQuadBuffer.position(0);
+            Matrix.setIdentityM(mStMatrix, 0);
+
+            mThread = new HandlerThread("SonicBrowserBlit");
+            mThread.start();
+            mHandler = new Handler(mThread.getLooper());
+
+            CountDownLatch initLatch = new CountDownLatch(1);
+            mHandler.post(() -> {
+                try {
+                    initOnBlitThread();
+                } catch (Throwable t) {
+                    Log.e(TAG, "RoundedSurfaceBlitter init failed", t);
+                    cleanupOnBlitThread();
+                } finally {
+                    initLatch.countDown();
+                }
+            });
+
+            try {
+                if (!initLatch.await(2000L, TimeUnit.MILLISECONDS)) {
+                    Log.e(TAG, "RoundedSurfaceBlitter init timed out");
+                }
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        boolean isReady() {
+            return mReady && !mReleased && mInputSurface != null && mInputSurface.isValid();
+        }
+
+        boolean matches(@Nullable Surface outputSurface, int width, int height) {
+            return isReady() && mOutputSurface == outputSurface && mWidth == width && mHeight == height;
+        }
+
+        @Nullable
+        Surface getInputSurface() {
+            return mInputSurface;
+        }
+
+        private void initOnBlitThread() {
+            mEglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
+            if (mEglDisplay == EGL14.EGL_NO_DISPLAY) {
+                throw new RuntimeException("eglGetDisplay failed");
+            }
+            int[] version = new int[2];
+            if (!EGL14.eglInitialize(mEglDisplay, version, 0, version, 1)) {
+                throw new RuntimeException("eglInitialize failed");
+            }
+
+            int[] attribList = {
+                    EGL14.EGL_RED_SIZE, 8,
+                    EGL14.EGL_GREEN_SIZE, 8,
+                    EGL14.EGL_BLUE_SIZE, 8,
+                    EGL14.EGL_ALPHA_SIZE, 8,
+                    EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                    EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
+                    EGL14.EGL_NONE
+            };
+            EGLConfig[] configs = new EGLConfig[1];
+            int[] numConfigs = new int[1];
+            if (!EGL14.eglChooseConfig(mEglDisplay, attribList, 0, configs, 0, 1, numConfigs, 0) || numConfigs[0] <= 0) {
+                throw new RuntimeException("eglChooseConfig RGBA8888 GLES2 failed");
+            }
+
+            int[] ctxAttribs = {
+                    EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
+                    EGL14.EGL_NONE
+            };
+            mEglContext = EGL14.eglCreateContext(mEglDisplay, configs[0], EGL14.EGL_NO_CONTEXT, ctxAttribs, 0);
+            if (mEglContext == null || mEglContext == EGL14.EGL_NO_CONTEXT) {
+                throw new RuntimeException("eglCreateContext failed");
+            }
+
+            int[] surfAttribs = { EGL14.EGL_NONE };
+            mEglSurface = EGL14.eglCreateWindowSurface(mEglDisplay, configs[0], mOutputSurface, surfAttribs, 0);
+            if (mEglSurface == null || mEglSurface == EGL14.EGL_NO_SURFACE) {
+                throw new RuntimeException("eglCreateWindowSurface failed");
+            }
+
+            if (!EGL14.eglMakeCurrent(mEglDisplay, mEglSurface, mEglSurface, mEglContext)) {
+                throw new RuntimeException("eglMakeCurrent failed");
+            }
+
+            mProgram = buildProgram(VERT_SHADER, FRAG_SHADER);
+            mAttrPos = GLES20.glGetAttribLocation(mProgram, "aPos");
+            mAttrUv = GLES20.glGetAttribLocation(mProgram, "aUv");
+            mUniStMatrix = GLES20.glGetUniformLocation(mProgram, "uStMatrix");
+            mUniTex = GLES20.glGetUniformLocation(mProgram, "uTex");
+            mUniSize = GLES20.glGetUniformLocation(mProgram, "uSize");
+            mUniRadius = GLES20.glGetUniformLocation(mProgram, "uRadius");
+
+            int[] texIds = new int[1];
+            GLES20.glGenTextures(1, texIds, 0);
+            mOesTexId = texIds[0];
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, mOesTexId);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+
+            // Clear output Surface to transparent black before first GeckoView frame arrives
+            GLES20.glViewport(0, 0, mWidth, mHeight);
+            GLES20.glDisable(GLES20.GL_BLEND);
+            GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+            GLES20.glDisable(GLES20.GL_CULL_FACE);
+            GLES20.glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+            EGL14.eglSwapBuffers(mEglDisplay, mEglSurface);
+
+            mSurfaceTexture = new SurfaceTexture(mOesTexId);
+            mSurfaceTexture.setDefaultBufferSize(mWidth, mHeight);
+            mSurfaceTexture.setOnFrameAvailableListener(st -> drawLatestFrameOnBlitThread(), mHandler);
+            mInputSurface = new Surface(mSurfaceTexture);
+            mReady = true;
+        }
+
+        private void drawLatestFrameOnBlitThread() {
+            if (mReleased || !mReady || mSurfaceTexture == null || mEglDisplay == EGL14.EGL_NO_DISPLAY) {
+                return;
+            }
+            try {
+                mSurfaceTexture.updateTexImage();
+                mSurfaceTexture.getTransformMatrix(mStMatrix);
+
+                GLES20.glViewport(0, 0, mWidth, mHeight);
+                GLES20.glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+
+                GLES20.glUseProgram(mProgram);
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, mOesTexId);
+                GLES20.glUniform1i(mUniTex, 0);
+                GLES20.glUniformMatrix4fv(mUniStMatrix, 1, false, mStMatrix, 0);
+                GLES20.glUniform2f(mUniSize, (float) mWidth, (float) mHeight);
+                GLES20.glUniform1f(mUniRadius, mRadiusPx);
+
+                mQuadBuffer.position(0);
+                GLES20.glEnableVertexAttribArray(mAttrPos);
+                GLES20.glVertexAttribPointer(mAttrPos, 2, GLES20.GL_FLOAT, false, 16, mQuadBuffer);
+
+                mQuadBuffer.position(2);
+                GLES20.glEnableVertexAttribArray(mAttrUv);
+                GLES20.glVertexAttribPointer(mAttrUv, 2, GLES20.GL_FLOAT, false, 16, mQuadBuffer);
+
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+
+                GLES20.glDisableVertexAttribArray(mAttrPos);
+                GLES20.glDisableVertexAttribArray(mAttrUv);
+
+                EGL14.eglSwapBuffers(mEglDisplay, mEglSurface);
+            } catch (Throwable t) {
+                Log.w(TAG, "RoundedSurfaceBlitter frame blit error: " + t.getMessage());
+            }
+        }
+
+        void release() {
+            if (mReleased) return;
+            mReleased = true;
+            mReady = false;
+
+            CountDownLatch releaseLatch = new CountDownLatch(1);
+            boolean posted = mHandler.post(() -> {
+                try {
+                    cleanupOnBlitThread();
+                } finally {
+                    releaseLatch.countDown();
+                }
+            });
+            if (posted) {
+                try {
+                    releaseLatch.await(1000L, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            mThread.quitSafely();
+        }
+
+        private void cleanupOnBlitThread() {
+            if (mSurfaceTexture != null) {
+                try { mSurfaceTexture.setOnFrameAvailableListener(null); } catch (Throwable ignored) {}
+            }
+            if (mInputSurface != null) {
+                try { mInputSurface.release(); } catch (Throwable ignored) {}
+                mInputSurface = null;
+            }
+            if (mSurfaceTexture != null) {
+                try { mSurfaceTexture.release(); } catch (Throwable ignored) {}
+                mSurfaceTexture = null;
+            }
+            if (mOesTexId != 0 && mEglContext != EGL14.EGL_NO_CONTEXT) {
+                try { GLES20.glDeleteTextures(1, new int[]{ mOesTexId }, 0); } catch (Throwable ignored) {}
+                mOesTexId = 0;
+            }
+            if (mProgram != 0 && mEglContext != EGL14.EGL_NO_CONTEXT) {
+                try { GLES20.glDeleteProgram(mProgram); } catch (Throwable ignored) {}
+                mProgram = 0;
+            }
+            if (mEglDisplay != EGL14.EGL_NO_DISPLAY) {
+                try {
+                    EGL14.eglMakeCurrent(mEglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
+                } catch (Throwable ignored) {}
+                if (mEglSurface != EGL14.EGL_NO_SURFACE) {
+                    try { EGL14.eglDestroySurface(mEglDisplay, mEglSurface); } catch (Throwable ignored) {}
+                    mEglSurface = EGL14.EGL_NO_SURFACE;
+                }
+                if (mEglContext != EGL14.EGL_NO_CONTEXT) {
+                    try { EGL14.eglDestroyContext(mEglDisplay, mEglContext); } catch (Throwable ignored) {}
+                    mEglContext = EGL14.EGL_NO_CONTEXT;
+                }
+                try { EGL14.eglTerminate(mEglDisplay); } catch (Throwable ignored) {}
+                mEglDisplay = EGL14.EGL_NO_DISPLAY;
+            }
+        }
+
+        private static int compileShader(int type, String source) {
+            int shader = GLES20.glCreateShader(type);
+            GLES20.glShaderSource(shader, source);
+            GLES20.glCompileShader(shader);
+            int[] status = new int[1];
+            GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0);
+            if (status[0] == 0) {
+                String info = GLES20.glGetShaderInfoLog(shader);
+                GLES20.glDeleteShader(shader);
+                throw new RuntimeException("Shader compile failed (" + type + "): " + info);
+            }
+            return shader;
+        }
+
+        private static int buildProgram(String vertSrc, String fragSrc) {
+            int vs = compileShader(GLES20.GL_VERTEX_SHADER, vertSrc);
+            int fs = compileShader(GLES20.GL_FRAGMENT_SHADER, fragSrc);
+            int prog = GLES20.glCreateProgram();
+            GLES20.glAttachShader(prog, vs);
+            GLES20.glAttachShader(prog, fs);
+            GLES20.glLinkProgram(prog);
+            int[] status = new int[1];
+            GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, status, 0);
+            GLES20.glDeleteShader(vs);
+            GLES20.glDeleteShader(fs);
+            if (status[0] == 0) {
+                String info = GLES20.glGetProgramInfoLog(prog);
+                GLES20.glDeleteProgram(prog);
+                throw new RuntimeException("Program link failed: " + info);
+            }
+            return prog;
+        }
+    }
 }

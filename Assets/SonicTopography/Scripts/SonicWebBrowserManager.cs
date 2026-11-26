@@ -34,7 +34,7 @@ namespace SonicTopography
     public class SonicWebBrowserManager : MonoBehaviour
     {
         public const int SurfaceWidth = 1280;
-        public const int SurfaceHeight = 736;
+        public const int SurfaceHeight = 752;
         public const string DefaultHomeUrl = "https://music.youtube.com";
         public const string DefaultHomeUrlPrefKey = "SonicTopography_BrowserDefaultUrl";
 
@@ -706,7 +706,7 @@ namespace SonicTopography
             _overlay.externalSurfaceHeight = SurfaceHeight;
             _overlay.noDepthBufferTesting = true;
             _overlay.useAutomaticFiltering = true;
-            _overlay.isAlphaPremultiplied = false;
+            _overlay.isAlphaPremultiplied = true;
             _overlay.hidden = true;
             _overlay.externalSurfaceObjectCreated += OnExternalSurfaceObjectCreated;
         }

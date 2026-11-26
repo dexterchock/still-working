@@ -1913,8 +1913,8 @@ namespace SonicTopography
         {
             RectTransform viewRect = CreateStretchRect("BrowserView", winParent, Vector4.zero);
 
-            // Concentric inset rounded Browser Viewport (932x536, r=24px inside CentralGlassWindow 960x564, r=38px; nav bar lives in BottomPlayerBar)
-            _browserViewportRect = CreateStretchRect("BrowserViewport", viewRect, new Vector4(14f, 14f, 14f, 14f));
+            // Frameless edge-to-edge rounded Browser Viewport (960x564 matching CentralGlassWindow, r=38px; nav bar lives in BottomPlayerBar)
+            _browserViewportRect = CreateStretchRect("BrowserViewport", viewRect, Vector4.zero);
             Image vpHit = _browserViewportRect.gameObject.AddComponent<Image>();
             vpHit.sprite = _whiteSprite;
             vpHit.color = new Color(0f, 0f, 0f, 0.002f);
@@ -1934,11 +1934,11 @@ namespace SonicTopography
             _browserPunchoutRawImage.enabled = false;
 
             SonicGlassSurface punchSurf = punchRect.gameObject.AddComponent<SonicGlassSurface>();
-            punchSurf.Configure(SonicSurfaceMode.SdfShape, 24f, pill: false, border: 0f);
+            punchSurf.Configure(SonicSurfaceMode.SdfShape, 38f, pill: false, border: 0f);
 
             RectTransform phRect = CreateStretchRect("BrowserPlaceholder", _browserViewportRect, Vector4.zero);
             _browserPlaceholderRoot = phRect.gameObject;
-            Image phBg = AddGlassSurface(phRect.gameObject, ColRecessedDark, 24f, isPill: false, border: 0.14f);
+            Image phBg = AddGlassSurface(phRect.gameObject, ColRecessedDark, 38f, isPill: false, border: 0.18f);
             phBg.raycastTarget = false;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
