@@ -40,17 +40,6 @@ Shader "SonicTopography/RoomLightWash"
             SAMPLER(sampler_uSonicTerrainEmissionTex);
             float _uSonicRoomHasEmissionTex;
 
-            // Stereo Passthrough Camera Access (PCA) real-surface albedo relighting uniforms
-            TEXTURE2D(_uSonicPcaTexL);
-            SAMPLER(sampler_uSonicPcaTexL);
-            TEXTURE2D(_uSonicPcaTexR);
-            SAMPLER(sampler_uSonicPcaTexR);
-            float4x4 _uSonicPcaWorldToCamL;
-            float4x4 _uSonicPcaWorldToCamR;
-            float4 _uSonicPcaProjL;
-            float4 _uSonicPcaProjR;
-            float4 _uSonicPcaFlags; // x = hasL, y = hasR, z = 1/resX, w = 1/resY
-
             float4 _uSonicRoomPlatterCenterWS;
             float4 _uSonicRoomPlatterNormalWS;
             float4 _uSonicRoomPlatterRightWS;
@@ -188,10 +177,13 @@ Shader "SonicTopography/RoomLightWash"
                 float invSq = 1.0 / (1.0 + dNorm * dNorm * 2.35);
                 float distAtten = invSq * smoothWindow;
 
-                // Slightly elevated LED pillar wall for coplanar floors/tables touching the platter base
+                // Coplanar surface weight (strictly 0 on vertical walls & ceilings so emitLift never creates a wall V-cusp)
+                float coplanarSurface = saturate((dot(surfN, platterN) - 0.78) / 0.22)
+                                      * (1.0 - smoothstep(0.02, 0.18, abs(heightOnPlatter)));
+
+                // Slightly elevated LED pillar wall ONLY for coplanar floors/tables touching the platter base
                 float emitLift = clamp(platterRadius * 0.16, 0.030, 0.12);
-                float nearPlaneWeight = saturate(1.0 - abs(heightOnPlatter) / max(0.18, platterRadius * 0.80));
-                float3 effectiveEmitter = closestOnDisc + platterN * (emitLift * nearPlaneWeight);
+                float3 effectiveEmitter = closestOnDisc + platterN * (emitLift * coplanarSurface);
                 float3 toEmitterVec = effectiveEmitter - input.posWorld;
                 float toEmitterDist = max(0.001, length(toEmitterVec));
                 float3 toEmitter = toEmitterVec / toEmitterDist;
@@ -199,8 +191,6 @@ Shader "SonicTopography/RoomLightWash"
                 // Strict directional Lambertian facing (zero back-face leak)
                 float nDotL = dot(surfN, toEmitter);
                 float lambert = saturate(nDotL);
-                float coplanarSurface = saturate((dot(surfN, platterN) - 0.78) / 0.22)
-                                      * (1.0 - smoothstep(0.02, 0.18, abs(heightOnPlatter)));
                 float coplanarWrap = coplanarSurface * saturate(nDotL * 0.55 + 0.45);
                 float diffuseFacing = max(lambert, coplanarWrap * 0.78);
 
@@ -219,7 +209,7 @@ Shader "SonicTopography/RoomLightWash"
                 float bounceLod = lerp(1.45, 2.45, contactBlend) + wideBlend * 2.95;
                 float3 bounceEmission = boostContrastSubtle(sampleTerrainEmission(emitterUV, bounceLod, fallbackCol));
 
-                // Much tighter grounded perimeter contact spill on coplanar floors/tables
+                // Tight grounded perimeter contact spill on coplanar floors/tables
                 float contactRange = clamp(platterRadius * 0.42, 0.09, 0.19);
                 float contactT = saturate(closestDist / contactRange);
                 float oneMinusContact = max(0.0, 1.0 - contactT);
@@ -252,6 +242,8 @@ Shader "SonicTopography/RoomLightWash"
 
                 // =========================================================================
                 // 2. TRUE DISTANCE-BLURRED GLOSSY REFLECTION OF THE LIVE TERRAIN
+                //    C1-continuous plane/closest-ray blend + soft satin wall response
+                //    (eliminates horizontal reflection cut lines on vertical walls!)
                 // =========================================================================
                 float3 reflRgb = float3(0.0, 0.0, 0.0);
                 if (smoothWindow > 0.001)
@@ -264,24 +256,14 @@ Shader "SonicTopography/RoomLightWash"
                     float rNumer = dot(toCanopy, platterN);
                     float rDenom = dot(R, platterN);
 
-                    float tRefl = -1.0;
-                    if (abs(rDenom) > 0.001)
-                    {
-                        tRefl = rNumer / rDenom;
-                    }
-
-                    float3 reflHitWS;
-                    bool hasPlaneHit = (tRefl > 0.0 && tRefl < maxRange * 2.5);
-                    if (hasPlaneHit)
-                    {
-                        reflHitWS = input.posWorld + R * tRefl;
-                    }
-                    else
-                    {
-                        float tClosest = max(0.0, dot(toCanopy, R));
-                        tRefl = tClosest;
-                        reflHitWS = input.posWorld + R * tClosest;
-                    }
+                    // C1-continuous blend between canopy plane intersection and closest-ray point
+                    float tClosest = max(0.0, dot(toCanopy, R));
+                    float tPlane = (abs(rDenom) > 0.001) ? (rNumer / rDenom) : -1.0;
+                    float planeValid = smoothstep(0.0, 0.16, tPlane)
+                                     * (1.0 - smoothstep(maxRange * 1.4, maxRange * 2.4, tPlane))
+                                     * smoothstep(0.05, 0.25, abs(rDenom));
+                    float tUse = lerp(tClosest, clamp(tPlane, 0.0, maxRange * 2.4), planeValid);
+                    float3 reflHitWS = input.posWorld + R * tUse;
 
                     float3 hitRel = reflHitWS - canopyCenter;
                     float3 hitInPlane = hitRel - platterN * dot(hitRel, platterN);
@@ -299,8 +281,12 @@ Shader "SonicTopography/RoomLightWash"
 
                     if (reflFacing > 0.001)
                     {
+                        // Perpendicular walls (drywall) get soft satin reflection while horizontal floors/tables stay crisp
+                        float perpWall = 1.0 - abs(dot(surfN, platterN));
+
                         float rDotL = saturate(dot(R, Lrefl));
-                        float glossExp = lerp(18.0, 7.5, saturate(repDist / max(0.35, platterRadius * 2.4)));
+                        float baseGlossExp = lerp(18.0, 7.5, saturate(repDist / max(0.35, platterRadius * 2.4)));
+                        float glossExp = lerp(baseGlossExp, 4.5, perpWall);
                         float glossLobe = (rDotL > 0.0001) ? pow(rDotL, glossExp) : 0.0;
 
                         if (glossLobe > 0.002)
@@ -310,7 +296,8 @@ Shader "SonicTopography/RoomLightWash"
 
                             float distFactor = saturate(repDist / max(0.32, platterRadius * 2.6));
                             float offAxisBlur = (1.0 - rDotL) * 4.5;
-                            float reflLod = clamp(lerp(0.80, 4.85, sqrt(distFactor)) + offAxisBlur, 0.75, 5.25);
+                            float minReflLod = lerp(0.80, 2.85, perpWall);
+                            float reflLod = clamp(lerp(minReflLod, 4.85, sqrt(distFactor)) + offAxisBlur, minReflLod, 5.25);
 
                             float3 reflEmission = boostContrastSubtle(sampleTerrainEmission(reflUV, reflLod, fallbackCol));
 
@@ -318,71 +305,9 @@ Shader "SonicTopography/RoomLightWash"
                             float fresnel = 0.06 + 0.94 * ((oneMinusV > 0.0001) ? pow(oneMinusV, 3.5) : 0.0);
 
                             float reflDistAtten = 1.0 / (1.0 + dNorm * dNorm * 1.45);
-                            reflRgb = reflEmission * (fresnel * glossLobe * reflFacing * reflDistAtten * smoothWindow * 0.95);
+                            float wallSpecWeight = lerp(1.0, 0.42, perpWall);
+                            reflRgb = reflEmission * (fresnel * glossLobe * reflFacing * reflDistAtten * smoothWindow * 0.95 * wallSpecWeight);
                         }
-                    }
-                }
-
-                // =========================================================================
-                // 3. TRUE PHYSICAL REAL-SURFACE ALBEDO RELIGHTING VIA STEREO PCA
-                //    RealSurfaceAlbedo * VirtualLight: dark mats/grout stay dark, light tiles
-                //    tint vividly by real surface color, tile seams break up glossy reflection
-                // =========================================================================
-                bool hasL = _uSonicPcaFlags.x > 0.5;
-                bool hasR = _uSonicPcaFlags.y > 0.5;
-                if (hasL || hasR)
-                {
-                    bool useRight = (unity_StereoEyeIndex > 0) ? hasR : (!hasL && hasR);
-                    float4x4 worldToCam = useRight ? _uSonicPcaWorldToCamR : _uSonicPcaWorldToCamL;
-                    float4 proj = useRight ? _uSonicPcaProjR : _uSonicPcaProjL;
-
-                    float3 pCam = mul(worldToCam, float4(input.posWorld, 1.0)).xyz;
-                    float2 pcaUV = (pCam.z > 0.08) ? ((pCam.xy / pCam.z) * proj.xy + proj.zw) : float2(-1.0, -1.0);
-                    float pcaEdge = step(0.08, pCam.z)
-                                  * smoothstep(0.01, 0.07, pcaUV.x) * (1.0 - smoothstep(0.93, 0.99, pcaUV.x))
-                                  * smoothstep(0.01, 0.07, pcaUV.y) * (1.0 - smoothstep(0.93, 0.99, pcaUV.y));
-
-                    if (pcaEdge > 0.001)
-                    {
-                        float2 stepUV = _uSonicPcaFlags.zw * 1.5;
-                        float3 camRgb;
-                        float3 camN, camS, camE, camW;
-                        if (useRight)
-                        {
-                            camRgb = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV, 0.0).rgb;
-                            camN = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV + float2(0.0, stepUV.y), 0.0).rgb;
-                            camS = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV - float2(0.0, stepUV.y), 0.0).rgb;
-                            camE = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV + float2(stepUV.x, 0.0), 0.0).rgb;
-                            camW = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexR, sampler_uSonicPcaTexR, pcaUV - float2(stepUV.x, 0.0), 0.0).rgb;
-                        }
-                        else
-                        {
-                            camRgb = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV, 0.0).rgb;
-                            camN = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV + float2(0.0, stepUV.y), 0.0).rgb;
-                            camS = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV - float2(0.0, stepUV.y), 0.0).rgb;
-                            camE = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV + float2(stepUV.x, 0.0), 0.0).rgb;
-                            camW = SAMPLE_TEXTURE2D_LOD(_uSonicPcaTexL, sampler_uSonicPcaTexL, pcaUV - float2(stepUV.x, 0.0), 0.0).rgb;
-                        }
-
-                        const float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
-                        float camLuma = dot(camRgb, lumaWeights);
-                        float lumaN = dot(camN, lumaWeights);
-                        float lumaS = dot(camS, lumaWeights);
-                        float lumaE = dot(camE, lumaWeights);
-                        float lumaW = dot(camW, lumaWeights);
-
-                        // Diffuse albedo modulation (NaN-safe pow) + 1.22x compensation so bright tiles stay vivid
-                        float3 estAlbedo = lerp(camLuma.xxx, camRgb, 0.65);
-                        float3 scaledAlbedo = max(float3(1e-5, 1e-5, 1e-5), saturate(estAlbedo * 2.55));
-                        float3 diffuseSurfaceMod = pow(scaledAlbedo, 0.92);
-
-                        // Glossy specular modulation: keeps Fresnel on dark glossy tiles, breaks on grout seams & ultra-dark matte fabric
-                        float neighborAvg = 0.25 * (lumaN + lumaS + lumaE + lumaW);
-                        float seamBreak = 1.0 - saturate(abs(camLuma - neighborAvg) * 6.0) * 0.45;
-                        float specSurfaceMod = (0.28 + 0.72 * smoothstep(0.008, 0.065, camLuma)) * seamBreak;
-
-                        diffuseRgb *= lerp(float3(1.0, 1.0, 1.0), diffuseSurfaceMod * 1.22, pcaEdge);
-                        reflRgb *= lerp(1.0, specSurfaceMod, pcaEdge);
                     }
                 }
 
@@ -405,10 +330,13 @@ Shader "SonicTopography/RoomLightWash"
                 // Apply silhouette softening, Room Glow slider, and visibility
                 lightRgb *= (silhouetteFade * glowIntensity * visibility);
 
-                // Gentle HDR shoulder + subtle hot-core lift so bright peaks genuinely pop while dark areas stay dark
+                // Gentle HDR shoulder + subtle hot-core lift + zero-cost chromatic vibrancy boost
                 float3 tonemapped = lightRgb / (1.0 + lightRgb * 0.28);
                 float hotPeak = max(tonemapped.r, max(tonemapped.g, tonemapped.b));
                 tonemapped += float3(0.05, 0.05, 0.06) * smoothstep(0.50, 1.40, hotPeak);
+
+                float lum = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
+                tonemapped = max(0.0, lerp(lum.xxx, tonemapped, 1.16));
 
                 float peakLum = max(tonemapped.r, max(tonemapped.g, tonemapped.b));
 

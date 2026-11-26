@@ -31,7 +31,6 @@ namespace SonicTopography
         public const float DefaultRoomGlow = 1.0f;
 
         private const string ScenePermission = "com.oculus.permission.USE_SCENE";
-        private const string HeadsetCameraPermission = "horizonos.permission.HEADSET_CAMERA";
         private const string PrefRoomGlow = "SonicTopography_ArRoomGlow";
         private const string PrefRoomLight = "SonicTopography_ArRoomLight";
         private const string PrefRealOcclusion = "SonicTopography_ArRealOcclusion";
@@ -60,12 +59,6 @@ namespace SonicTopography
         public bool HasScenePermission =>
 #if UNITY_ANDROID && !UNITY_EDITOR
             Permission.HasUserAuthorizedPermission(ScenePermission);
-#else
-            true;
-#endif
-        public bool HasHeadsetCameraPermission =>
-#if UNITY_ANDROID && !UNITY_EDITOR
-            Permission.HasUserAuthorizedPermission(HeadsetCameraPermission);
 #else
             true;
 #endif
@@ -99,7 +92,6 @@ namespace SonicTopography
                     PlayerPrefs.SetInt(PrefRoomLight, value ? 1 : 0);
                     PlayerPrefs.Save();
                     SyncRoomEffectVisibility();
-                    SyncPcaState();
                 }
             }
         }
@@ -154,8 +146,6 @@ namespace SonicTopography
         private EnvironmentRaycastManager _raycastManager;
         private MRUK _mruk;
         private EffectMesh _effectMesh;
-        private PassthroughCameraAccess _pcaLeft;
-        private PassthroughCameraAccess _pcaRight;
         private MetaXRAudioRoomAcousticProperties _roomAcoustics;
 
         private GameObject _mrInfraRoot;
@@ -205,10 +195,8 @@ namespace SonicTopography
         private bool _realOcclusionEnabled = false;
         private bool _surfaceSnapEnabled = true;
 
-        // Scene & PCA camera permission / loading state
+        // Scene permission & loading state
         private bool _scenePermissionRequested = false;
-        private bool _headsetCameraPermissionRequested = false;
-        private bool _loggedPcaActiveOnce = false;
         private bool _sceneLoadInitiated = false;
         private int _mrukRoomLayer = 28;
         private float _nextAudioRoomSyncTime = 0f;
@@ -237,13 +225,6 @@ namespace SonicTopography
         private static readonly int IdLocalDiscFadeRadius = Shader.PropertyToID("_uLocalDiscFadeRadius");
         private static readonly int IdRoomEmissionTex = Shader.PropertyToID("_uSonicTerrainEmissionTex");
         private static readonly int IdRoomHasEmissionTex = Shader.PropertyToID("_uSonicRoomHasEmissionTex");
-        private static readonly int IdPcaTexL = Shader.PropertyToID("_uSonicPcaTexL");
-        private static readonly int IdPcaTexR = Shader.PropertyToID("_uSonicPcaTexR");
-        private static readonly int IdPcaWorldToCamL = Shader.PropertyToID("_uSonicPcaWorldToCamL");
-        private static readonly int IdPcaWorldToCamR = Shader.PropertyToID("_uSonicPcaWorldToCamR");
-        private static readonly int IdPcaProjL = Shader.PropertyToID("_uSonicPcaProjL");
-        private static readonly int IdPcaProjR = Shader.PropertyToID("_uSonicPcaProjR");
-        private static readonly int IdPcaFlags = Shader.PropertyToID("_uSonicPcaFlags");
 
         private void Awake()
         {
@@ -280,7 +261,6 @@ namespace SonicTopography
             EnsureMrInfrastructure();
             SyncDepthManagerState();
             SyncRoomEffectVisibility();
-            SyncPcaState();
             SyncContextualBoundarySuppression();
             ApplySpatialAudioForCurrentState();
         }
@@ -364,8 +344,7 @@ namespace SonicTopography
                 EnsureScenePermissionAndLoadRoom();
                 SyncDepthManagerState();
                 SyncRoomEffectVisibility();
-                SyncPcaState();
-                Debug.Log($"[SonicMR] Entering AR mode. HasScenePermission={HasScenePermission}, HasHeadsetCameraPermission={HasHeadsetCameraPermission}, PcaSupported={PassthroughCameraAccess.IsSupported}, HasLoadedRoom={HasLoadedRoom}");
+                Debug.Log($"[SonicMR] Entering AR mode. HasScenePermission={HasScenePermission}, DepthSupported={EnvironmentDepthManager.IsSupported}, HasLoadedRoom={HasLoadedRoom}");
 
                 if (!_hasCustomArPose)
                 {
@@ -579,7 +558,6 @@ namespace SonicTopography
             EnsureRoomLightWashMaterial();
             EnsureTerrainEmissionResources();
             EnsureLocalGlowCatcher();
-            EnsurePcaCameras();
 
             if (_mrukRoot == null)
             {
@@ -690,129 +668,6 @@ namespace SonicTopography
                     wrapMode = TextureWrapMode.Clamp
                 };
                 _terrainEmissionRT.Create();
-            }
-        }
-
-        private void EnsurePcaCameras()
-        {
-            if (_mrInfraRoot == null) return;
-            if (_pcaLeft == null)
-            {
-                _pcaLeft = CreatePcaCamera("SonicPcaCameraLeft", PassthroughCameraAccess.CameraPositionType.Left);
-            }
-            if (_pcaRight == null)
-            {
-                _pcaRight = CreatePcaCamera("SonicPcaCameraRight", PassthroughCameraAccess.CameraPositionType.Right);
-            }
-        }
-
-        private PassthroughCameraAccess CreatePcaCamera(string goName, PassthroughCameraAccess.CameraPositionType positionType)
-        {
-            GameObject go = new GameObject(goName);
-            go.SetActive(false); // Configure position, resolution, disabled state & MaxFramerate before Awake/OnEnable
-            go.transform.SetParent(_mrInfraRoot.transform, false);
-            PassthroughCameraAccess pca = go.AddComponent<PassthroughCameraAccess>();
-            pca.CameraPosition = positionType;
-            pca.RequestedResolution = new Vector2Int(1280, 960);
-            pca.enabled = false;
-            pca.MaxFramerate = 60;
-            go.SetActive(true);
-            return pca;
-        }
-
-        private void SyncPcaState()
-        {
-            bool shouldRun = false;
-            try
-            {
-                bool runtimeEligible = !Application.isEditor || OVRPlugin.initialized;
-                shouldRun = IsArVisualActive &&
-                            _roomLightEnabled &&
-                            HasHeadsetCameraPermission &&
-                            runtimeEligible &&
-                            PassthroughCameraAccess.IsSupported;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[SonicMR] PassthroughCameraAccess support check ignored: {ex.Message}");
-                shouldRun = false;
-            }
-
-            try
-            {
-                if (_pcaLeft != null && _pcaLeft.enabled != shouldRun)
-                {
-                    _pcaLeft.enabled = shouldRun;
-                }
-                if (_pcaRight != null && _pcaRight.enabled != shouldRun)
-                {
-                    _pcaRight.enabled = shouldRun;
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[SonicMR] PassthroughCameraAccess toggle ignored: {ex.Message}");
-                shouldRun = false;
-            }
-
-            if (!shouldRun)
-            {
-                Shader.SetGlobalVector(IdPcaFlags, Vector4.zero);
-            }
-        }
-
-        private static bool TryBindPcaCamera(
-            PassthroughCameraAccess pca,
-            int texId,
-            int worldToCamId,
-            int projId,
-            out Vector2Int curRes)
-        {
-            curRes = Vector2Int.zero;
-            if (pca == null || !pca.enabled || !pca.IsPlaying) return false;
-
-            try
-            {
-                Texture tex = pca.GetTexture();
-                curRes = pca.CurrentResolution;
-                PassthroughCameraAccess.CameraIntrinsics intr = pca.Intrinsics;
-                if (tex == null || curRes.x <= 0 || curRes.y <= 0 ||
-                    intr.SensorResolution.x <= 0 || intr.SensorResolution.y <= 0)
-                {
-                    return false;
-                }
-
-                Pose camPose = pca.GetCameraPose();
-                Matrix4x4 worldToCam = Matrix4x4.TRS(camPose.position, camPose.rotation, Vector3.one).inverse;
-
-                // Exact CalcSensorCropRegion() projection matching PassthroughCameraAccess.cs
-                Vector2 sensorRes = new Vector2(intr.SensorResolution.x, intr.SensorResolution.y);
-                Vector2 res = new Vector2(curRes.x, curRes.y);
-                Vector2 sf = new Vector2(res.x / sensorRes.x, res.y / sensorRes.y);
-                float maxSf = Mathf.Max(sf.x, sf.y);
-                if (maxSf <= 1e-5f) return false;
-                sf /= maxSf;
-                float cropW = sensorRes.x * sf.x;
-                float cropH = sensorRes.y * sf.y;
-                if (cropW <= 1e-3f || cropH <= 1e-3f) return false;
-                float cropX = sensorRes.x * (1f - sf.x) * 0.5f;
-                float cropY = sensorRes.y * (1f - sf.y) * 0.5f;
-
-                Vector4 proj = new Vector4(
-                    intr.FocalLength.x / cropW,
-                    intr.FocalLength.y / cropH,
-                    (intr.PrincipalPoint.x - cropX) / cropW,
-                    (intr.PrincipalPoint.y - cropY) / cropH);
-
-                Shader.SetGlobalTexture(texId, tex);
-                Shader.SetGlobalMatrix(worldToCamId, worldToCam);
-                Shader.SetGlobalVector(projId, proj);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[SonicMR] PCA bind skipped: {ex.Message}");
-                return false;
             }
         }
 
@@ -1106,71 +961,28 @@ namespace SonicTopography
         private void EnsureScenePermissionAndLoadRoom()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            bool hasScene = Permission.HasUserAuthorizedPermission(ScenePermission);
-            bool hasCam = Permission.HasUserAuthorizedPermission(HeadsetCameraPermission);
-
-            bool needScene = !hasScene && !_scenePermissionRequested;
-            bool needCam = !hasCam && !_headsetCameraPermissionRequested;
-
-            if (needScene || needCam)
+            if (!Permission.HasUserAuthorizedPermission(ScenePermission))
             {
-                PermissionCallbacks callbacks = new PermissionCallbacks();
-                callbacks.PermissionGranted += perm =>
+                if (!_scenePermissionRequested)
                 {
-                    if (perm == ScenePermission)
+                    _scenePermissionRequested = true;
+                    PermissionCallbacks callbacks = new PermissionCallbacks();
+                    callbacks.PermissionGranted += _ =>
                     {
                         SyncDepthManagerState();
                         TryLoadMrukRoomAsync();
-                    }
-                    else if (perm == HeadsetCameraPermission)
-                    {
-                        SyncPcaState();
-                    }
-                };
-                callbacks.PermissionDenied += perm =>
-                {
-                    if (perm == ScenePermission)
+                    };
+                    callbacks.PermissionDenied += _ =>
                     {
                         Debug.Log("[SonicMR] USE_SCENE denied; running gracefully in free-floating AR mode.");
                         SyncDepthManagerState();
-                    }
-                    else if (perm == HeadsetCameraPermission)
-                    {
-                        Debug.Log("[SonicMR] HEADSET_CAMERA denied; falling back gracefully to emission-only AR room lighting.");
-                        SyncPcaState();
-                    }
-                };
-
-                if (needScene && needCam)
-                {
-                    _scenePermissionRequested = true;
-                    _headsetCameraPermissionRequested = true;
-                    Permission.RequestUserPermissions(new[] { ScenePermission, HeadsetCameraPermission }, callbacks);
-                }
-                else if (needScene)
-                {
-                    _scenePermissionRequested = true;
+                    };
                     Permission.RequestUserPermission(ScenePermission, callbacks);
                 }
-                else
-                {
-                    _headsetCameraPermissionRequested = true;
-                    Permission.RequestUserPermission(HeadsetCameraPermission, callbacks);
-                }
+                return;
             }
-
-            if (hasScene)
-            {
-                TryLoadMrukRoomAsync();
-            }
-            if (hasCam)
-            {
-                SyncPcaState();
-            }
-#else
-            TryLoadMrukRoomAsync();
-            SyncPcaState();
 #endif
+            TryLoadMrukRoomAsync();
         }
 
         private async void TryLoadMrukRoomAsync()
@@ -1289,20 +1101,14 @@ namespace SonicTopography
                 }
             }
 
-            // Retry scene / headset camera permissions silently if user grants via OS dialog or outside callback
-            bool needSceneRetry = !_sceneLoadInitiated;
-            bool needPcaRetry = _roomLightEnabled && _pcaLeft != null && !_pcaLeft.enabled;
-            if (_targetMode == SonicExperienceMode.AR && (needSceneRetry || needPcaRetry) && Time.unscaledTime >= _nextPermissionPollTime)
+            // Retry scene permission / room load silently if user grants outside callback
+            if (_targetMode == SonicExperienceMode.AR && !_sceneLoadInitiated && Time.unscaledTime >= _nextPermissionPollTime)
             {
                 _nextPermissionPollTime = Time.unscaledTime + 1.0f;
-                if (needSceneRetry && HasScenePermission)
+                if (HasScenePermission)
                 {
                     SyncDepthManagerState();
                     TryLoadMrukRoomAsync();
-                }
-                if (needPcaRetry && HasHeadsetCameraPermission)
-                {
-                    SyncPcaState();
                 }
             }
 
@@ -1340,7 +1146,6 @@ namespace SonicTopography
                 EnablePassthroughUnderlay(false);
                 SyncDepthManagerState();
                 SyncRoomEffectVisibility();
-                SyncPcaState();
                 Shader.SetGlobalVector(IdDissolveParams, Vector4.zero);
                 Shader.SetGlobalVector(IdDomeParams, Vector4.zero);
             }
@@ -1402,27 +1207,6 @@ namespace SonicTopography
                         Shader.SetGlobalFloat(IdRoomHasEmissionTex, 0f);
                     }
 
-                    bool hasPcaL = TryBindPcaCamera(_pcaLeft, IdPcaTexL, IdPcaWorldToCamL, IdPcaProjL, out Vector2Int resL);
-                    bool hasPcaR = TryBindPcaCamera(_pcaRight, IdPcaTexR, IdPcaWorldToCamR, IdPcaProjR, out Vector2Int resR);
-                    if (hasPcaL || hasPcaR)
-                    {
-                        Vector2Int activeRes = hasPcaL ? resL : resR;
-                        Shader.SetGlobalVector(IdPcaFlags, new Vector4(
-                            hasPcaL ? 1f : 0f,
-                            hasPcaR ? 1f : 0f,
-                            1f / Mathf.Max(1, activeRes.x),
-                            1f / Mathf.Max(1, activeRes.y)));
-                        if (!_loggedPcaActiveOnce)
-                        {
-                            _loggedPcaActiveOnce = true;
-                            Debug.Log($"[SonicMR] PCA stereo relighting active: L={hasPcaL} ({resL.x}x{resL.y}), R={hasPcaR} ({resR.x}x{resR.y})");
-                        }
-                    }
-                    else
-                    {
-                        Shader.SetGlobalVector(IdPcaFlags, Vector4.zero);
-                    }
-
                     Vector3 upN = platterRot * Vector3.up;
                     Vector3 rightV = platterRot * Vector3.right;
                     Vector3 fwdV = platterRot * Vector3.forward;
@@ -1478,7 +1262,6 @@ namespace SonicTopography
                 else
                 {
                     Shader.SetGlobalFloat(IdRoomHasEmissionTex, 0f);
-                    Shader.SetGlobalVector(IdPcaFlags, Vector4.zero);
                     Shader.SetGlobalVector(IdRoomFx, new Vector4(0f, 0f, 0f, Time.time));
                     if (_localGlowCatcherGo != null && _localGlowCatcherGo.activeSelf)
                     {
@@ -1795,7 +1578,6 @@ namespace SonicTopography
             Shader.SetGlobalVector(IdDissolveParams, Vector4.zero);
             Shader.SetGlobalVector(IdDomeParams, Vector4.zero);
             Shader.SetGlobalFloat(IdRoomHasEmissionTex, 0f);
-            Shader.SetGlobalVector(IdPcaFlags, Vector4.zero);
             if (_roomLightWashMat != null) Destroy(_roomLightWashMat);
             if (_emissionBakeMat != null) Destroy(_emissionBakeMat);
             if (_terrainEmissionRT != null)
