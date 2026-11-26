@@ -139,6 +139,8 @@
     el.addEventListener('pause', onPauseOrEnd, true);
     el.addEventListener('ended', onPauseOrEnd, true);
     el.addEventListener('loadedmetadata', () => pushMetadata(true), true);
+    el.addEventListener('seeked', () => pushMetadata(true), true);
+    el.addEventListener('durationchange', () => pushMetadata(true), true);
 
     if (!el.paused && !el.ended) {
       onPlayEvent();
@@ -172,7 +174,40 @@
         return el;
       }
     }
+    if (primaryMedia && document.contains(primaryMedia) && Number.isFinite(primaryMedia.duration) && primaryMedia.duration > 0 && primaryMedia.readyState >= 1) {
+      return primaryMedia;
+    }
+    for (let i = 0; i < list.length; i++) {
+      const el = list[i];
+      if (Number.isFinite(el.duration) && el.duration > 0 && el.readyState >= 1) {
+        primaryMedia = el;
+        return el;
+      }
+    }
     return primaryMedia && document.contains(primaryMedia) ? primaryMedia : (list[0] || null);
+  }
+
+  function getMediaTimeAndDuration(el) {
+    let time = (el && Number.isFinite(el.currentTime) && el.currentTime >= 0) ? el.currentTime : 0;
+    let duration = (el && Number.isFinite(el.duration) && el.duration > 0) ? el.duration : 0;
+    if (duration <= 0) {
+      try {
+        const bar = document.querySelector('ytmusic-player-bar #progress-bar');
+        if (bar) {
+          const maxRaw = (bar.max !== undefined && bar.max !== null && bar.max !== '') ? bar.max : bar.getAttribute('aria-valuemax');
+          const valRaw = (bar.value !== undefined && bar.value !== null && bar.value !== '') ? bar.value : bar.getAttribute('aria-valuenow');
+          const maxNum = Number(maxRaw);
+          const valNum = Number(valRaw);
+          if (Number.isFinite(maxNum) && maxNum > 0) {
+            duration = maxNum;
+            if (Number.isFinite(valNum) && valNum >= 0) {
+              time = Math.min(valNum, duration);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return { time, duration };
   }
 
   function encodeFreqBase64(buf) {
@@ -187,14 +222,15 @@
     if (!wasPlayingSent) return;
     wasPlayingSent = false;
     zeroAudioStartMs = 0;
+    const { time, duration } = getMediaTimeAndDuration(el);
     sendToNative({
       type: 'fft',
       playing: false,
       b64: '',
       drmSilent: false,
       peak: 0,
-      time: el && Number.isFinite(el.currentTime) ? el.currentTime : 0,
-      duration: el && Number.isFinite(el.duration) ? el.duration : 0
+      time: time,
+      duration: duration
     });
   }
 
@@ -222,14 +258,15 @@
     }
 
     wasPlayingSent = true;
+    const { time, duration } = getMediaTimeAndDuration(el);
     sendToNative({
       type: 'fft',
       playing: true,
       b64: b64,
       drmSilent: drmSilent,
       peak: peak,
-      time: Number.isFinite(el.currentTime) ? el.currentTime : 0,
-      duration: Number.isFinite(el.duration) ? el.duration : 0
+      time: time,
+      duration: duration
     });
   }
 
@@ -294,7 +331,8 @@
 
     const playing = !!(el && !el.paused && !el.ended);
     const vol = el ? (el.muted ? 0 : el.volume) : desiredVolume;
-    const sig = `${title}|${artist}|${artworkUrl}|${playing ? 1 : 0}|${vol.toFixed(2)}`;
+    const { time, duration } = getMediaTimeAndDuration(el);
+    const sig = `${title}|${artist}|${artworkUrl}|${playing ? 1 : 0}|${vol.toFixed(2)}|${Math.floor(time)}|${Math.floor(duration)}`;
     if (!force && sig === lastMetaSig) return;
     lastMetaSig = sig;
 
@@ -304,7 +342,9 @@
       artist: artist,
       artworkUrl: artworkUrl,
       playing: playing,
-      volume: vol
+      volume: vol,
+      time: time,
+      duration: duration
     });
   }
 
@@ -538,6 +578,21 @@
           } catch (_) {}
         }
         pushMetadata(true);
+        break;
+      }
+      case 'seek': {
+        if (!el) break;
+        const { duration: maxDur } = getMediaTimeAndDuration(el);
+        const rawTarget = Number(msg.value);
+        if (!Number.isFinite(rawTarget)) break;
+        const clamped = maxDur > 0 ? Math.max(0, Math.min(maxDur, rawTarget)) : Math.max(0, rawTarget);
+        try {
+          el.currentTime = clamped;
+        } catch (_) {}
+        pushMetadata(true);
+        if (!el.paused && !el.ended) {
+          sampleAndSendFft(el, performance.now());
+        }
         break;
       }
       case 'commitText': {

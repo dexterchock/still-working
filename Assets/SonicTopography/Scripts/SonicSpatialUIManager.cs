@@ -912,27 +912,44 @@ namespace SonicTopography
         /// Android Horizon OS system fonts (/system/fonts/), and Windows system fonts to ensure song titles
         /// like '边个' and Japanese/Korean glyphs render sharply across all UI views.
         /// </summary>
+        public static void ApplySharedCJKFont(TextMeshProUGUI label)
+        {
+            if (label == null) return;
+            TMP_FontAsset baseFont = label.font != null ? label.font : TMP_Settings.defaultFontAsset;
+            EnsureCJKFontSupportStatic(baseFont);
+            EnsureLabelCJKFontStatic(label, baseFont);
+        }
+
         private void EnsureCJKFontSupport()
         {
             if (_fontAsset == null)
             {
                 _fontAsset = TMP_Settings.defaultFontAsset;
             }
-            if (_fontAsset == null) return;
+            EnsureCJKFontSupportStatic(_fontAsset);
+        }
+
+        private static void EnsureCJKFontSupportStatic(TMP_FontAsset baseFont)
+        {
+            if (baseFont == null)
+            {
+                baseFont = TMP_Settings.defaultFontAsset;
+            }
+            if (baseFont == null) return;
 
             // If we have already created the fallback font assets in memory, ensure they are attached.
             if (_cjkFontsInitialized && _cachedCjkFontAssets.Count > 0)
             {
                 for (int i = 0; i < _cachedCjkFontAssets.Count; i++)
                 {
-                    AddFallbackFontAsset(_cachedCjkFontAssets[i]);
+                    AddFallbackFontAssetStatic(baseFont, _cachedCjkFontAssets[i]);
                 }
                 return;
             }
 
-            if (_fontAsset.fallbackFontAssetTable == null)
+            if (baseFont.fallbackFontAssetTable == null)
             {
-                _fontAsset.fallbackFontAssetTable = new List<TMP_FontAsset>();
+                baseFont.fallbackFontAssetTable = new List<TMP_FontAsset>();
             }
 
             List<string> candidatePaths = new List<string>();
@@ -1063,7 +1080,7 @@ namespace SonicTopography
                                 _cachedCjkFontAssets.Add(cjkAsset);
                             }
 
-                            AddFallbackFontAsset(cjkAsset);
+                            AddFallbackFontAssetStatic(baseFont, cjkAsset);
                             addedCount++;
                             if (addedCount >= 4) break;
                         }
@@ -1109,7 +1126,7 @@ namespace SonicTopography
                                 _cachedCjkFontAssets.Add(cjkAsset);
                             }
 
-                            AddFallbackFontAsset(cjkAsset);
+                            AddFallbackFontAssetStatic(baseFont, cjkAsset);
                             addedCount++;
                             if (addedCount >= 4) break;
                         }
@@ -1121,20 +1138,20 @@ namespace SonicTopography
             _cjkFontsInitialized = true;
         }
 
-        private void AddFallbackFontAsset(TMP_FontAsset fallbackAsset)
+        private static void AddFallbackFontAssetStatic(TMP_FontAsset baseFont, TMP_FontAsset fallbackAsset)
         {
             if (fallbackAsset == null) return;
 
-            if (_fontAsset != null)
+            if (baseFont != null)
             {
-                if (_fontAsset.fallbackFontAssetTable == null) _fontAsset.fallbackFontAssetTable = new List<TMP_FontAsset>();
-                if (!_fontAsset.fallbackFontAssetTable.Contains(fallbackAsset))
+                if (baseFont.fallbackFontAssetTable == null) baseFont.fallbackFontAssetTable = new List<TMP_FontAsset>();
+                if (!baseFont.fallbackFontAssetTable.Contains(fallbackAsset))
                 {
-                    _fontAsset.fallbackFontAssetTable.Add(fallbackAsset);
+                    baseFont.fallbackFontAssetTable.Add(fallbackAsset);
                 }
             }
 
-            if (TMP_Settings.defaultFontAsset != null && TMP_Settings.defaultFontAsset != _fontAsset)
+            if (TMP_Settings.defaultFontAsset != null && TMP_Settings.defaultFontAsset != baseFont)
             {
                 if (TMP_Settings.defaultFontAsset.fallbackFontAssetTable == null)
                     TMP_Settings.defaultFontAsset.fallbackFontAssetTable = new List<TMP_FontAsset>();
@@ -1175,10 +1192,15 @@ namespace SonicTopography
 
         private void EnsureLabelCJKFont(TextMeshProUGUI label)
         {
+            EnsureLabelCJKFontStatic(label, _fontAsset);
+        }
+
+        private static void EnsureLabelCJKFontStatic(TextMeshProUGUI label, TMP_FontAsset defaultFont)
+        {
             if (label == null) return;
             if (label.font == null)
             {
-                label.font = _fontAsset ?? TMP_Settings.defaultFontAsset;
+                label.font = defaultFont ?? TMP_Settings.defaultFontAsset;
             }
             if (label.font != null && _cachedCjkFontAssets != null && _cachedCjkFontAssets.Count > 0)
             {
@@ -1737,7 +1759,7 @@ namespace SonicTopography
                 SonicExperienceMode targetMode = i == 0 ? SonicExperienceMode.VR : SonicExperienceMode.AR;
                 RectTransform btnRect = CreateRect(btnNames[i], pillRect, new Vector2(0f, yOffsets[i]), new Vector2(56f, 56f));
 
-                Image btnBg = AddGlassSurface(btnRect.gameObject, ColPillIdle, 28f, isPill: true, border: 0.08f);
+                Image btnBg = AddGlassSurface(btnRect.gameObject, Color.clear, 28f, isPill: true, border: 0.0f);
                 _modeSwitchBgs[i] = btnBg;
 
                 Button btn = btnRect.gameObject.AddComponent<Button>();
@@ -1753,7 +1775,7 @@ namespace SonicTopography
                 StretchFull(lbl.rectTransform);
                 _modeSwitchLabels[i] = lbl;
 
-                SonicVisionHoverEffect hover = AddHoverHighlight(btnRect.gameObject, btnBg, null, ColPillIdle, 0.08f, 0.22f);
+                SonicVisionHoverEffect hover = AddHoverHighlight(btnRect.gameObject, btnBg, null, Color.clear, 0.0f, 0.22f);
                 if (hover != null)
                 {
                     hover.targetLabel = lbl;
@@ -1778,19 +1800,20 @@ namespace SonicTopography
 
                 if (bg != null)
                 {
-                    Color bgCol = active ? ColPillActive : ColPillIdle;
+                    Color bgCol = active ? ColPillActive : Color.clear;
+                    float normalBorder = active ? 0.38f : 0.0f;
                     bg.color = bgCol;
                     SonicVisionHoverEffect hover = bg.GetComponent<SonicVisionHoverEffect>();
                     if (hover != null)
                     {
                         hover.normalLabelColor = active ? Color.white : ColTextSecondary;
                         hover.hoverLabelColor = Color.white;
-                        hover.SetNormalState(bgCol, active ? 0.38f : 0.08f);
+                        hover.SetNormalState(bgCol, normalBorder);
                     }
                     else
                     {
                         SonicGlassSurface surf = bg.GetComponent<SonicGlassSurface>();
-                        if (surf != null) surf.SetBorder(active ? 0.38f : 0.08f);
+                        if (surf != null) surf.SetBorder(normalBorder);
                     }
                 }
                 if (lbl != null)
@@ -1890,8 +1913,8 @@ namespace SonicTopography
         {
             RectTransform viewRect = CreateStretchRect("BrowserView", winParent, Vector4.zero);
 
-            // Edge-to-edge rounded Browser Viewport (960x564 matching CentralGlassWindow, r=38px; nav bar lives in BottomPlayerBar)
-            _browserViewportRect = CreateStretchRect("BrowserViewport", viewRect, Vector4.zero);
+            // Concentric inset rounded Browser Viewport (932x536, r=24px inside CentralGlassWindow 960x564, r=38px; nav bar lives in BottomPlayerBar)
+            _browserViewportRect = CreateStretchRect("BrowserViewport", viewRect, new Vector4(14f, 14f, 14f, 14f));
             Image vpHit = _browserViewportRect.gameObject.AddComponent<Image>();
             vpHit.sprite = _whiteSprite;
             vpHit.color = new Color(0f, 0f, 0f, 0.002f);
@@ -1911,11 +1934,11 @@ namespace SonicTopography
             _browserPunchoutRawImage.enabled = false;
 
             SonicGlassSurface punchSurf = punchRect.gameObject.AddComponent<SonicGlassSurface>();
-            punchSurf.Configure(SonicSurfaceMode.SdfShape, 38f, pill: false, border: 0f);
+            punchSurf.Configure(SonicSurfaceMode.SdfShape, 24f, pill: false, border: 0f);
 
             RectTransform phRect = CreateStretchRect("BrowserPlaceholder", _browserViewportRect, Vector4.zero);
             _browserPlaceholderRoot = phRect.gameObject;
-            Image phBg = AddGlassSurface(phRect.gameObject, ColRecessedDark, 38f, isPill: false, border: 0.18f);
+            Image phBg = AddGlassSurface(phRect.gameObject, ColRecessedDark, 24f, isPill: false, border: 0.14f);
             phBg.raycastTarget = false;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -3172,9 +3195,16 @@ namespace SonicTopography
                 initial: 0f,
                 onValueChanged: val =>
                 {
-                    if (_suppressSliderCallbacks || _player == null) return;
+                    if (_suppressSliderCallbacks) return;
                     _lastProgressInteractionTime = Time.unscaledTime;
-                    _player.SeekNormalized(val);
+                    if (UseBrowserPlayerBar)
+                    {
+                        _browserManager.SeekNormalized(val);
+                    }
+                    else if (_player != null)
+                    {
+                        _player.SeekNormalized(val);
+                    }
                 });
 
             // 3. Right Cluster: Plain Icon Shuffle | Repeat | Mute | Volume Bar

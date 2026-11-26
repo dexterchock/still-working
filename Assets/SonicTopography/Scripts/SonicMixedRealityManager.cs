@@ -7,6 +7,7 @@ using Unity.XR.CoreUtils;
 using UnityEngine;
 using UnityEngine.Android;
 using UnityEngine.Rendering;
+using UnityEngine.XR;
 
 namespace SonicTopography
 {
@@ -202,6 +203,18 @@ namespace SonicTopography
         private float _nextAudioRoomSyncTime = 0f;
         private float _nextPermissionPollTime = 0f;
 
+        // Tracking-origin recenter & MRUK anchor alignment state (XROrigin without OVRCameraRig)
+        private readonly List<XRInputSubsystem> _xrInputSubsystems = new List<XRInputSubsystem>();
+        private readonly List<XRInputSubsystem> _subscribedXrSubsystems = new List<XRInputSubsystem>();
+        private bool _ovrRecenterSubscribed = false;
+        private int _lastRecenterCount = -1;
+        private float _recenterSettleUntil = -1f;
+        private float _nextAnchorSyncTime = 0f;
+        private OVRAnchor _refAnchor = OVRAnchor.Null;
+        private Vector3 _lastRefAnchorPos = Vector3.zero;
+        private Quaternion _lastRefAnchorRot = Quaternion.identity;
+        private bool _hasRefAnchorPose = false;
+
         // Cached shader IDs
         private static readonly int IdSonicArModeGlobal = Shader.PropertyToID("_SonicArModeGlobal");
         private static readonly int IdDissolveOriginWS = Shader.PropertyToID("_SonicArDissolveOriginWS");
@@ -259,6 +272,7 @@ namespace SonicTopography
 
             EnsureSharedOVRManager();
             EnsureMrInfrastructure();
+            EnsureRecenterListenersBound();
             SyncDepthManagerState();
             SyncRoomEffectVisibility();
             SyncContextualBoundarySuppression();
@@ -340,8 +354,10 @@ namespace SonicTopography
                 }
 
                 EnsureMrInfrastructure();
+                EnsureRecenterListenersBound();
                 EnablePassthroughUnderlay(true);
                 EnsureScenePermissionAndLoadRoom();
+                SyncMrukRoomsToLiveAnchorPose(forceImmediate: true);
                 SyncDepthManagerState();
                 SyncRoomEffectVisibility();
                 Debug.Log($"[SonicMR] Entering AR mode. HasScenePermission={HasScenePermission}, DepthSupported={EnvironmentDepthManager.IsSupported}, HasLoadedRoom={HasLoadedRoom}");
@@ -1005,6 +1021,7 @@ namespace SonicTopography
                 {
                     SyncRoomEffectVisibility();
                     SyncRoomAcousticsToMrukRoom();
+                    CaptureReferenceAnchorPose();
                 }
                 else
                 {
@@ -1024,6 +1041,223 @@ namespace SonicTopography
         {
             SyncRoomEffectVisibility();
             SyncRoomAcousticsToMrukRoom();
+            CaptureReferenceAnchorPose();
+        }
+
+        private void EnsureRecenterListenersBound()
+        {
+            if (!_ovrRecenterSubscribed && OVRManager.display != null)
+            {
+                OVRManager.display.RecenteredPose += OnTrackingOriginRecentered;
+                _ovrRecenterSubscribed = true;
+            }
+
+            _xrInputSubsystems.Clear();
+            SubsystemManager.GetSubsystems(_xrInputSubsystems);
+            for (int i = 0; i < _xrInputSubsystems.Count; i++)
+            {
+                XRInputSubsystem sub = _xrInputSubsystems[i];
+                if (sub != null && !_subscribedXrSubsystems.Contains(sub))
+                {
+                    sub.trackingOriginUpdated += OnXrTrackingOriginUpdated;
+                    _subscribedXrSubsystems.Add(sub);
+                }
+            }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_lastRecenterCount < 0)
+            {
+                try
+                {
+                    _lastRecenterCount = OVRPlugin.GetLocalTrackingSpaceRecenterCount();
+                }
+                catch { }
+            }
+#endif
+        }
+
+        private void UnbindRecenterListeners()
+        {
+            if (_ovrRecenterSubscribed && OVRManager.display != null)
+            {
+                OVRManager.display.RecenteredPose -= OnTrackingOriginRecentered;
+                _ovrRecenterSubscribed = false;
+            }
+            for (int i = 0; i < _subscribedXrSubsystems.Count; i++)
+            {
+                XRInputSubsystem sub = _subscribedXrSubsystems[i];
+                if (sub != null)
+                {
+                    sub.trackingOriginUpdated -= OnXrTrackingOriginUpdated;
+                }
+            }
+            _subscribedXrSubsystems.Clear();
+        }
+
+        private void OnXrTrackingOriginUpdated(XRInputSubsystem subsystem)
+        {
+            OnTrackingOriginRecentered();
+        }
+
+        private void OnTrackingOriginRecentered()
+        {
+            _recenterSettleUntil = Time.unscaledTime + 1.0f;
+            if (IsArVisualActive)
+            {
+                if (_xrOrigin == null) _xrOrigin = FindFirstObjectByType<XROrigin>(FindObjectsInactive.Include);
+                if (_xrOrigin != null)
+                {
+                    _xrOrigin.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+                }
+                SyncMrukRoomsToLiveAnchorPose(forceImmediate: true);
+            }
+        }
+
+        private static bool TryLocateAnchorInTrackingSpace(OVRAnchor anchor, out Vector3 pos, out Quaternion rot)
+        {
+            pos = Vector3.zero;
+            rot = Quaternion.identity;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (anchor == OVRAnchor.Null) return false;
+            try
+            {
+                if (anchor.TryGetComponent(out OVRLocatable locatable) &&
+                    locatable.TryGetSceneAnchorPose(out OVRLocatable.TrackingSpacePose pose) &&
+                    pose.Position.HasValue && pose.Rotation.HasValue)
+                {
+                    pos = pose.Position.Value;
+                    rot = pose.Rotation.Value;
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[SonicMR] TryGetSceneAnchorPose failed for anchor {anchor.Uuid}: {ex.Message}");
+            }
+#endif
+            return false;
+        }
+
+        private void CaptureReferenceAnchorPose()
+        {
+            MRUKRoom room = GetActiveMrukRoom();
+            if (room == null) return;
+
+            MRUKAnchor preferred = (room.FloorAnchors != null && room.FloorAnchors.Count > 0) ? room.FloorAnchors[0] : null;
+            if (preferred != null && preferred.Anchor != OVRAnchor.Null &&
+                TryLocateAnchorInTrackingSpace(preferred.Anchor, out Vector3 floorPos, out Quaternion floorRot))
+            {
+                _refAnchor = preferred.Anchor;
+                _lastRefAnchorPos = floorPos;
+                _lastRefAnchorRot = floorRot;
+                _hasRefAnchorPose = true;
+                return;
+            }
+
+            if (room.Anchors != null)
+            {
+                for (int i = 0; i < room.Anchors.Count; i++)
+                {
+                    MRUKAnchor anchor = room.Anchors[i];
+                    if (anchor == null || anchor.Anchor == OVRAnchor.Null) continue;
+                    if (TryLocateAnchorInTrackingSpace(anchor.Anchor, out Vector3 aPos, out Quaternion aRot))
+                    {
+                        _refAnchor = anchor.Anchor;
+                        _lastRefAnchorPos = aPos;
+                        _lastRefAnchorRot = aRot;
+                        _hasRefAnchorPose = true;
+                        return;
+                    }
+                }
+            }
+        }
+
+        private void SyncMrukRoomsToLiveAnchorPose(bool forceImmediate)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_mruk == null || _mruk.Rooms == null || _mruk.Rooms.Count == 0) return;
+
+            if (!_hasRefAnchorPose || _refAnchor == OVRAnchor.Null)
+            {
+                CaptureReferenceAnchorPose();
+                if (!_hasRefAnchorPose) return;
+            }
+
+            if (!TryLocateAnchorInTrackingSpace(_refAnchor, out Vector3 livePos, out Quaternion liveRot))
+            {
+                // Fallback: scan room anchors to see if another anchor is still locatable
+                MRUKRoom room = GetActiveMrukRoom();
+                bool foundAlternate = false;
+                if (room != null && room.Anchors != null)
+                {
+                    for (int i = 0; i < room.Anchors.Count; i++)
+                    {
+                        MRUKAnchor a = room.Anchors[i];
+                        if (a == null || a.Anchor == OVRAnchor.Null || a.Anchor == _refAnchor) continue;
+                        if (TryLocateAnchorInTrackingSpace(a.Anchor, out Vector3 altPos, out Quaternion altRot))
+                        {
+                            if (!forceImmediate)
+                            {
+                                _refAnchor = a.Anchor;
+                                _lastRefAnchorPos = altPos;
+                                _lastRefAnchorRot = altRot;
+                                _hasRefAnchorPose = true;
+                            }
+                            foundAlternate = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (forceImmediate || !foundAlternate)
+                {
+                    Debug.Log("[SonicMR] Reference anchor unavailable after recenter; reloading MRUK room cleanly.");
+                    _mruk.ClearScene();
+                    _filteredTableMeshes.Clear();
+                    _sceneLoadInitiated = false;
+                    _hasRefAnchorPose = false;
+                    _refAnchor = OVRAnchor.Null;
+                    TryLoadMrukRoomAsync();
+                }
+                return;
+            }
+
+            Quaternion deltaRot = liveRot * Quaternion.Inverse(_lastRefAnchorRot);
+            Vector3 deltaPos = livePos - (deltaRot * _lastRefAnchorPos);
+            float angleDeg = Quaternion.Angle(Quaternion.identity, deltaRot);
+
+            if (deltaPos.sqrMagnitude > 4e-6f || angleDeg > 0.10f)
+            {
+                for (int i = 0; i < _mruk.Rooms.Count; i++)
+                {
+                    MRUKRoom r = _mruk.Rooms[i];
+                    if (r == null) continue;
+                    Vector3 nextPos = deltaRot * r.transform.position + deltaPos;
+                    Quaternion nextRot = deltaRot * r.transform.rotation;
+                    r.transform.SetPositionAndRotation(nextPos, nextRot);
+                }
+
+                if (_hasCustomArPose)
+                {
+                    _arTargetPos = deltaRot * _arTargetPos + deltaPos;
+                    _arTargetRot = deltaRot * _arTargetRot;
+                    _arSurfaceNormal = (deltaRot * _arSurfaceNormal).normalized;
+                }
+
+                if (_isTransitioning)
+                {
+                    _transStartPos = deltaRot * _transStartPos + deltaPos;
+                    _transStartRot = deltaRot * _transStartRot;
+                    _transEndPos = deltaRot * _transEndPos + deltaPos;
+                    _transEndRot = deltaRot * _transEndRot;
+                }
+
+                _lastRefAnchorPos = livePos;
+                _lastRefAnchorRot = liveRot;
+                SyncRoomAcousticsToMrukRoom();
+                Debug.Log($"[SonicMR] Re-aligned MRUK room + AR terrain after tracking origin shift (deltaPos={deltaPos.magnitude:F3}m, deltaAngle={angleDeg:F2}deg, forced={forceImmediate})");
+            }
+#endif
         }
 
         private void SyncRoomAcousticsToMrukRoom()
@@ -1109,6 +1343,41 @@ namespace SonicTopography
                 {
                     SyncDepthManagerState();
                     TryLoadMrukRoomAsync();
+                }
+            }
+
+            if (!_ovrRecenterSubscribed)
+            {
+                EnsureRecenterListenersBound();
+            }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                int curRecenterCount = OVRPlugin.GetLocalTrackingSpaceRecenterCount();
+                if (_lastRecenterCount >= 0 && curRecenterCount != _lastRecenterCount)
+                {
+                    _lastRecenterCount = curRecenterCount;
+                    OnTrackingOriginRecentered();
+                }
+                else if (_lastRecenterCount < 0)
+                {
+                    _lastRecenterCount = curRecenterCount;
+                }
+            }
+            catch { }
+#endif
+
+            if (IsArVisualActive)
+            {
+                if (Time.unscaledTime < _recenterSettleUntil)
+                {
+                    SyncMrukRoomsToLiveAnchorPose(false);
+                }
+                else if (Time.unscaledTime >= _nextAnchorSyncTime)
+                {
+                    _nextAnchorSyncTime = Time.unscaledTime + 0.15f;
+                    SyncMrukRoomsToLiveAnchorPose(false);
                 }
             }
 
@@ -1570,6 +1839,7 @@ namespace SonicTopography
 
         private void OnDestroy()
         {
+            UnbindRecenterListeners();
             if (Instance == this)
             {
                 Instance = null;

@@ -34,7 +34,7 @@ namespace SonicTopography
     public class SonicWebBrowserManager : MonoBehaviour
     {
         public const int SurfaceWidth = 1280;
-        public const int SurfaceHeight = 752;
+        public const int SurfaceHeight = 736;
         public const string DefaultHomeUrl = "https://music.youtube.com";
         public const string DefaultHomeUrlPrefKey = "SonicTopography_BrowserDefaultUrl";
 
@@ -84,6 +84,12 @@ namespace SonicTopography
 
         private SonicBrowserStatus _status = new SonicBrowserStatus();
         private bool _preferBrowserControls = false;
+
+        private bool _hasPendingSeek = false;
+        private float _pendingSeekSeconds = 0f;
+        private float _nextSeekFlushTime = 0f;
+        private float _suppressRemoteTimeSyncUntil = 0f;
+        private float _optimisticSeekSeconds = 0f;
 
         private TouchScreenKeyboard _webKeyboard;
         private string _lastWebKeyboardText = string.Empty;
@@ -448,6 +454,42 @@ namespace SonicTopography
             OnBrowserStateChanged?.Invoke();
         }
 
+        public void SeekNormalized(float normalized01)
+        {
+            float dur = CurrentDuration;
+            if (dur <= 0.01f) return;
+            SeekTo(Mathf.Clamp01(normalized01) * dur);
+        }
+
+        public void SeekTo(float seconds)
+        {
+            float dur = CurrentDuration;
+            float clamped = dur > 0.01f ? Mathf.Clamp(seconds, 0f, dur) : Mathf.Max(0f, seconds);
+            if (_status != null)
+            {
+                _status.currentTime = clamped;
+            }
+            _optimisticSeekSeconds = clamped;
+            _pendingSeekSeconds = clamped;
+            _hasPendingSeek = true;
+            _suppressRemoteTimeSyncUntil = Time.unscaledTime + 0.65f;
+            if (Time.unscaledTime >= _nextSeekFlushTime)
+            {
+                FlushPendingSeek();
+            }
+            OnBrowserStateChanged?.Invoke();
+        }
+
+        private void FlushPendingSeek()
+        {
+            if (!_hasPendingSeek) return;
+            _hasPendingSeek = false;
+            _nextSeekFlushTime = Time.unscaledTime + 0.09f;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            _bridge?.Call("seekTo", _pendingSeekSeconds);
+#endif
+        }
+
         public void RequestManualKeyboard()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -547,6 +589,11 @@ namespace SonicTopography
                 UpdateBrowserSpatialAudioPose();
             }
 #endif
+
+            if (_hasPendingSeek && Time.unscaledTime >= _nextSeekFlushTime)
+            {
+                FlushPendingSeek();
+            }
 
             PollWebVirtualKeyboard();
         }
@@ -744,6 +791,11 @@ namespace SonicTopography
                            _status.canGoForward != nextStatus.canGoForward ||
                            _status.loading != nextStatus.loading ||
                            Mathf.Abs(_status.volume - nextStatus.volume) > 0.02f;
+
+            if (Time.unscaledTime < _suppressRemoteTimeSyncUntil)
+            {
+                nextStatus.currentTime = _optimisticSeekSeconds;
+            }
 
             _status = nextStatus;
 

@@ -4,7 +4,7 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
     {
         [PerRendererData] _MainTex ("Sprite Texture", 2D) = "white" {}
         _Color ("Tint", Color) = (1,1,1,1)
-        _BorderInset ("Glass Border Inset (px)", Float) = 1.0
+        _BorderInset ("Glass Border Inset (px)", Float) = 0.0
 
         _StencilComp ("Stencil Comparison", Float) = 8
         _Stencil ("Stencil ID", Float) = 0
@@ -76,7 +76,6 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
 
             float4 _ClipRect;
             float _BorderInset;
-            float _SonicArModeGlobal;
 
             float sdRoundedBox(float2 p, float2 b, float r)
             {
@@ -94,8 +93,8 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
 
                 bool hasCustomSize = (IN.uv2.x > 0.5 && IN.uv2.y > 0.5);
                 OUT.rectUV = hasCustomSize ? IN.uv1 : IN.uv0;
-                OUT.rectSize = hasCustomSize ? IN.uv2 : float2(960.0, 564.0);
-                OUT.shapeParam = hasCustomSize ? IN.uv3 : float4(38.0, 10.0, 0.0, 0.0);
+                OUT.rectSize = hasCustomSize ? IN.uv2 : float2(932.0, 536.0);
+                OUT.shapeParam = hasCustomSize ? IN.uv3 : float4(24.0, 10.0, 0.0, 0.0);
                 return OUT;
             }
 
@@ -122,11 +121,7 @@ Shader "SonicTopography/BrowserUnderlayPunchout"
                 float aa = clamp(fwidth(dist), 0.35, 1.6);
                 float innerDist = dist + _BorderInset;
                 half keep = (half)smoothstep(-aa * 0.55, aa * 0.55, innerDist);
-                half3 arCornerBezel = half3(0.055h, 0.065h, 0.085h);
-                half3 cornerRgb = lerp(half3(0.0h, 0.0h, 0.0h), arCornerBezel, (half)saturate(_SonicArModeGlobal));
-                half cornerAlpha = keep * (half)lerp(1.0, 0.94, saturate(_SonicArModeGlobal));
-
-                return half4(cornerRgb * keep, cornerAlpha);
+                return half4(0.0h, 0.0h, 0.0h, keep);
             }
             ENDHLSL
         }

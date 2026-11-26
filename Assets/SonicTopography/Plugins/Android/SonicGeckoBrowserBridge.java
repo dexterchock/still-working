@@ -46,7 +46,7 @@ public class SonicGeckoBrowserBridge {
 
     private Surface mSurface;
     private int mSurfaceWidth = 1280;
-    private int mSurfaceHeight = 752;
+    private int mSurfaceHeight = 736;
     private boolean mSurfaceBound = false;
 
     private boolean mInitialized = false;
@@ -366,6 +366,17 @@ public class SonicGeckoBrowserBridge {
         postCommandToExtension("setVolume", null, clamped, false);
     }
 
+    public void seekTo(float seconds) {
+        float clamped = Math.max(0f, seconds);
+        synchronized (mStateLock) {
+            if (mDuration > 0.0 && clamped > mDuration) {
+                clamped = (float) mDuration;
+            }
+            mCurrentTime = clamped;
+        }
+        postCommandToExtension("seek", null, clamped, false);
+    }
+
     public void setSpatialAudio(boolean active, float lx, float ly, float lz, float rx, float ry, float rz, float refDist) {
         mUiHandler.post(() -> {
             if (mPort == null || mShutdown) return;
@@ -563,6 +574,18 @@ public class SonicGeckoBrowserBridge {
                     mArtworkUrl = obj.optString("artworkUrl", "");
                     mIsPlaying = obj.optBoolean("playing", mIsPlaying);
                     mVolume = (float) obj.optDouble("volume", mVolume);
+                    if (obj.has("duration")) {
+                        double dur = obj.optDouble("duration", -1.0);
+                        if (dur >= 0.0) {
+                            mDuration = dur;
+                        }
+                    }
+                    if (obj.has("time")) {
+                        double cur = obj.optDouble("time", -1.0);
+                        if (cur >= 0.0) {
+                            mCurrentTime = cur;
+                        }
+                    }
                 }
             } else if ("inputFocus".equals(type)) {
                 boolean focused = obj.optBoolean("focused", true);

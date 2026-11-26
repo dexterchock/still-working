@@ -52,8 +52,6 @@ namespace SonicTopography
         // Terrain grab state
         private bool _grabbingTerrainLeft;
         private bool _grabbingTerrainRight;
-        private bool _grabbingKeychainLeft;
-        private bool _grabbingKeychainRight;
 
         private Vector3 _singleGrabLocalOffsetWS;
         private float _singleGrabRayDist;
@@ -87,7 +85,7 @@ namespace SonicTopography
         private XRHandSubsystem _handSubsystem;
         private static readonly List<XRHandSubsystem> s_handSubsystems = new List<XRHandSubsystem>();
 
-        public bool IsGrabbingAny => _grabbingTerrainLeft || _grabbingTerrainRight || _grabbingKeychainLeft || _grabbingKeychainRight;
+        public bool IsGrabbingAny => _grabbingTerrainLeft || _grabbingTerrainRight;
         public bool IsGrabbingTerrain => _grabbingTerrainLeft || _grabbingTerrainRight;
 
         public void Initialize(
@@ -146,7 +144,6 @@ namespace SonicTopography
 
             bool pointerOverUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
 
-            HandleKeychainGrab(left, right, pointerOverUi);
             HandleTerrainGrabAndScale(left, right, pointerOverUi);
             HandleTerrainTapAndPokeRipples(left, right, pointerOverUi);
         }
@@ -155,56 +152,7 @@ namespace SonicTopography
         {
             _grabbingTerrainLeft = false;
             _grabbingTerrainRight = false;
-            _grabbingKeychainLeft = false;
-            _grabbingKeychainRight = false;
             _hasSmoothedPose = false;
-            _keychain?.SetDragged(false);
-        }
-
-        private void HandleKeychainGrab(in HandInputState left, in HandInputState right, bool pointerOverUi)
-        {
-            if (_keychain == null || !_keychain.IsVisible) return;
-
-            if (_grabbingKeychainLeft && !left.gripPressed) _grabbingKeychainLeft = false;
-            if (_grabbingKeychainRight && !right.gripPressed) _grabbingKeychainRight = false;
-
-            if (!pointerOverUi)
-            {
-                if (left.gripDown && !_grabbingTerrainLeft && !_grabbingKeychainRight && CanGrabKeychain(left))
-                {
-                    _grabbingKeychainLeft = true;
-                    _keychain.BeginGrab(left.hasRay ? left.ray : new Ray(left.grabPointWS, Vector3.forward), left.grabPointWS, !left.hasGrabPoint);
-                }
-                else if (right.gripDown && !_grabbingTerrainRight && !_grabbingKeychainLeft && CanGrabKeychain(right))
-                {
-                    _grabbingKeychainRight = true;
-                    _keychain.BeginGrab(right.hasRay ? right.ray : new Ray(right.grabPointWS, Vector3.forward), right.grabPointWS, !right.hasGrabPoint);
-                }
-            }
-
-            if (_grabbingKeychainLeft)
-            {
-                _keychain.UpdateGrab(left.hasRay ? left.ray : new Ray(left.grabPointWS, Vector3.forward), left.grabPointWS);
-            }
-            else if (_grabbingKeychainRight)
-            {
-                _keychain.UpdateGrab(right.hasRay ? right.ray : new Ray(right.grabPointWS, Vector3.forward), right.grabPointWS);
-            }
-            else
-            {
-                _keychain.SetDragged(false);
-            }
-        }
-
-        private bool CanGrabKeychain(in HandInputState hand)
-        {
-            Collider kcCol = _keychain != null ? _keychain.GrabCollider : null;
-            if (kcCol == null || !kcCol.enabled) return false;
-            if (hand.hasGrabPoint && Vector3.Distance(hand.grabPointWS, _keychain.transform.position) <= 0.22f)
-            {
-                return true;
-            }
-            return hand.hasRay && kcCol.Raycast(hand.ray, out _, 12f);
         }
 
         private void HandleTerrainGrabAndScale(in HandInputState left, in HandInputState right, bool pointerOverUi)
@@ -226,7 +174,7 @@ namespace SonicTopography
 
             if (!pointerOverUi)
             {
-                if (!_grabbingTerrainLeft && !_grabbingKeychainLeft && left.gripDown && CanGrabTerrain(left, curPos, curRot, curRadius))
+                if (!_grabbingTerrainLeft && left.gripDown && CanGrabTerrain(left, curPos, curRot, curRadius))
                 {
                     _grabbingTerrainLeft = true;
                     if (_grabbingTerrainRight)
@@ -238,7 +186,7 @@ namespace SonicTopography
                         BeginSingleHandGrab(left, curPos);
                     }
                 }
-                if (!_grabbingTerrainRight && !_grabbingKeychainRight && right.gripDown && CanGrabTerrain(right, curPos, curRot, curRadius))
+                if (!_grabbingTerrainRight && right.gripDown && CanGrabTerrain(right, curPos, curRot, curRadius))
                 {
                     _grabbingTerrainRight = true;
                     if (_grabbingTerrainLeft)
@@ -395,13 +343,13 @@ namespace SonicTopography
             Transform platterT = _visualizer.PlatterRoot != null ? _visualizer.PlatterRoot.transform : null;
             if (platterT == null) return;
 
-            if (!_grabbingTerrainLeft && !_grabbingKeychainLeft && left.triggerDown && left.hasRay &&
+            if (!_grabbingTerrainLeft && left.triggerDown && left.hasRay &&
                 _terrainGrabCollider.Raycast(left.ray, out RaycastHit leftHit, 14f))
             {
                 FireRippleFromWorldHit(platterT, leftHit.point, 1.35f, isRight: false, haptic: !left.isBareHand);
             }
 
-            if (!_grabbingTerrainRight && !_grabbingKeychainRight && right.triggerDown && right.hasRay &&
+            if (!_grabbingTerrainRight && right.triggerDown && right.hasRay &&
                 _terrainGrabCollider.Raycast(right.ray, out RaycastHit rightHit, 14f))
             {
                 FireRippleFromWorldHit(platterT, rightHit.point, 1.35f, isRight: true, haptic: !right.isBareHand);
