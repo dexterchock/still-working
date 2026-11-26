@@ -5,8 +5,8 @@ Shader "SonicTopography/TerrainPillars"
         _BoxWidth ("Box Width", Float) = 0.9
         _uGlowIntensity ("Glow Intensity", Float) = 1.0
         _uArMode ("AR Mode Blend", Range(0, 1)) = 0.0
-        _uArOcclusionEnabled ("AR Depth Occlusion", Float) = 1.0
-        _uArBaseHeight ("AR Base Height", Float) = 0.045
+        _uArOcclusionEnabled ("AR Depth Occlusion", Float) = 0.0
+        _uArBaseHeight ("AR Base Height", Float) = 1.55
         _uArSurfaceLiftWorld ("AR Surface Lift (m)", Float) = 0.005
         _uArIdleBoost ("AR Idle Glow Boost", Float) = 0.32
         _EnvironmentDepthBias ("Environment Depth Bias", Float) = 0.025
@@ -36,10 +36,8 @@ Shader "SonicTopography/TerrainPillars"
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_instancing
-            #pragma multi_compile _ HARD_OCCLUSION SOFT_OCCLUSION
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-            #include "Packages/com.meta.xr.sdk.core/Shaders/EnvironmentDepth/URP/EnvironmentOcclusionURP.hlsl"
 
             float _uTime;
 
@@ -79,7 +77,7 @@ Shader "SonicTopography/TerrainPillars"
             float4x4 _PlatterMatrix;
             float _BoxWidth;
 
-            // Passthrough AR Adaptation
+            // Passthrough AR Adaptation (Real Occlusion bypassed for now so crystal pillars stay crisply opaque)
             float _uArMode;
             float _uArOcclusionEnabled;
             float _uArBaseHeight;
@@ -109,7 +107,7 @@ Shader "SonicTopography/TerrainPillars"
                 float4 topEdgeOrCBase2  : TEXCOORD2; // rgb = topEdgeGlow (top) or cBase2 (side), w = distFade
                 float4 currentGlowAndN  : TEXCOORD3; // rgb = currentGlow, w = normElevation
                 float4 rippleAddAndE    : TEXCOORD4; // rgb = rippleAdd, w = activeEnergy
-                float  brillianceSpark  : TEXCOORD5;
+                float4 sparkAndArData   : TEXCOORD5; // x = brillianceSpark, y = arFaceShade, z = arMusicLift, w = unused
                 float3 worldPos         : TEXCOORD6;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
@@ -183,16 +181,37 @@ Shader "SonicTopography/TerrainPillars"
                 float centerDist = length(pos2D);
                 float rnd = randomHash(pos2D);
 
-                float globalFalloff = glslSmoothstep(60.0, 30.0, centerDist);
+                // VR preserves exact original circular falloff; AR extends organic height & waves cleanly out to the rim
+                float vrGlobalFalloff = glslSmoothstep(60.0, 30.0, centerDist);
+                float arGlobalFalloff = lerp(0.62, 1.0, glslSmoothstep(77.5, 44.0, centerDist));
+                float globalFalloff = lerp(vrGlobalFalloff, arGlobalFalloff, _uArMode);
+
                 float elevation = 0.0;
+                float audioElevation = 0.0;
+                float arIdleElevation = 0.0;
+                float arHillsVal = 0.5;
 
                 if (globalFalloff > 0.0001)
                 {
-                    // 1. Idle Background state (smooth, ocean-like)
+                    // 1. Idle Background state (VR exact original + AR organic crystal-mosaic topography)
                     float2 movingPos = pos2D * 0.05 + float2(_uTime * 0.1, _uTime * 0.05);
                     float baseNoise = (snoise(movingPos) + 1.0) * 0.5;
                     float wave = sin(pos2D.x * 0.15 + pos2D.y * 0.1 - _uTime * 0.6) * 0.5 + 0.5;
-                    float idleElevation = lerp(baseNoise, wave, _uSmoothness * 0.5 + 0.2) * 0.8 * globalFalloff;
+                    float vrIdleElevation = lerp(baseNoise, wave, _uSmoothness * 0.5 + 0.2) * 0.8 * vrGlobalFalloff;
+
+                    if (_uArMode > 0.0001)
+                    {
+                        float2 arDrift1 = pos2D * 0.048 + float2(_uTime * 0.075, -_uTime * 0.045);
+                        float2 arDrift2 = pos2D * 0.135 + float2(-_uTime * 0.09, _uTime * 0.065);
+                        arHillsVal = snoise(arDrift1) * 0.5 + 0.5;
+                        float arRidges = snoise(arDrift2) * 0.5 + 0.5;
+                        float arGentleWave = sin(pos2D.x * 0.11 - pos2D.y * 0.08 + _uTime * 0.45) * 0.5 + 0.5;
+                        float arTileStep = frac(rnd * 7.13);
+                        float arRimWeight = lerp(0.58, 1.0, glslSmoothstep(77.5, 52.0, centerDist));
+                        arIdleElevation = (arHillsVal * 1.15 + arRidges * 0.72 + arGentleWave * 0.38 + arTileStep * 0.65) * arRimWeight;
+                    }
+
+                    float idleElevation = lerp(vrIdleElevation, arIdleElevation, _uArMode);
 
                     // 2. Frequency Regions & Displacements
                     // Sub-Bass: Center heavy, ultra slow rolling hills, massive block lifts
@@ -233,7 +252,7 @@ Shader "SonicTopography/TerrainPillars"
                     }
 
                     // Combine
-                    float audioElevation = subLift + bassLift + lowMidLift + midLift + highMidLift;
+                    audioElevation = subLift + bassLift + lowMidLift + midLift + highMidLift;
 
                     // Energy Spike
                     if (rnd > 0.99)
@@ -328,18 +347,11 @@ Shader "SonicTopography/TerrainPillars"
                 output.worldPos = worldPos;
                 output.uvAndRelYDist = float4(input.uv.x, input.uv.y, yPos, vertexDist);
 
-                // Precompute constant per-pillar colors & glow once per vertex instead of per pixel
-                float normElevation = saturate(elevation / 8.0);
-                float arIdlePulse = sin(centerDist * 0.16 - _uTime * 1.45) * 0.5 + 0.5;
-                float arIdleWave = _uArMode * _uArIdleBoost * (0.35 + 0.65 * arIdlePulse);
-                normElevation = saturate(normElevation + arIdleWave * (1.0 - normElevation * 0.6));
-
+                // --- Shared theme palette inputs ---
                 float3 backdropColor = _uFogColor.rgb;
                 float vrOuterBlend = glslSmoothstep(22.0, 62.0, centerDist);
-                float arOuterBlend = glslSmoothstep(66.0, 77.5, centerDist) * 0.22;
-                float outerBaseBlend = lerp(vrOuterBlend, arOuterBlend, _uArMode);
-                float3 cBase1 = lerp(_uBaseColor1.rgb, backdropColor, outerBaseBlend);
-                float3 cBase2 = lerp(_uBaseColor2.rgb, backdropColor, outerBaseBlend);
+                float3 vrBase1 = lerp(_uBaseColor1.rgb, backdropColor, vrOuterBlend);
+                float3 vrBase2 = lerp(_uBaseColor2.rgb, backdropColor, vrOuterBlend);
 
                 float3 coolCore = _uCoolCore.rgb;
                 float3 coolEdge = _uCoolEdge.rgb;
@@ -351,51 +363,139 @@ Shader "SonicTopography/TerrainPillars"
                 float3 zoneEdge = lerp(coolEdge, warmEdge, warmBlend);
 
                 float3 targetGlow = lerp(zoneCore, zoneEdge, frac(rnd * 11.0));
-                float distFade = 1.0 - glslSmoothstep(lerp(38.0, 71.5, _uArMode), lerp(72.0, 77.4, _uArMode), centerDist);
-
                 float3 brightCool = lerp(coolCore, float3(1.0, 1.0, 1.0), 0.28);
                 targetGlow = lerp(targetGlow, brightCool, _uBrightness * 0.6);
 
-                float3 currentGlow = lerp(cBase2, targetGlow, normElevation) * (_uGlowIntensity * (1.22 + 0.18 * _uArMode)) * distFade;
-                currentGlow = lerp(currentGlow, _uRippleColor.rgb * 1.25, rippleAnim.x);
-                currentGlow = lerp(currentGlow, float3(1.25, 1.25, 1.25), rippleAnim.y);
+                // --- Exact VR path (untouched when _uArMode == 0) ---
+                float vrNormElevation = saturate(elevation / 8.0);
+                float vrDistFade = 1.0 - glslSmoothstep(38.0, 72.0, centerDist);
+                float3 vrCurrentGlow = lerp(vrBase2, targetGlow, vrNormElevation) * (_uGlowIntensity * 1.22) * vrDistFade;
+                vrCurrentGlow = lerp(vrCurrentGlow, _uRippleColor.rgb * 1.25, rippleAnim.x);
+                vrCurrentGlow = lerp(vrCurrentGlow, float3(1.25, 1.25, 1.25), rippleAnim.y);
+                float vrActiveEnergy = saturate(vrNormElevation * 1.65 + rippleAnim.x + rippleAnim.y);
+
+                // --- AR Luminous Crystal/LED Tile path (only computed when _uArMode > 0) ---
+                float arNormElevation = vrNormElevation;
+                float arDistFade = vrDistFade;
+                float3 arCurrentGlow = vrCurrentGlow;
+                float3 arSideBottom = vrBase1;
+                float3 arSideMid = vrBase2;
+                float3 arTopBevelColor = vrCurrentGlow;
+                float arActiveEnergy = vrActiveEnergy;
+                float arMusicLift = 0.0;
+                float arFaceShade = 1.0;
+
+                if (_uArMode > 0.0001)
+                {
+                    // Keep the entire disc glowing crisply right to the circular physical edge
+                    arDistFade = lerp(0.84, 1.0, glslSmoothstep(77.5, 58.0, centerDist));
+
+                    arMusicLift = saturate(audioElevation / 6.0 + rippleAnim.x * 0.55 + rippleAnim.y * 0.75);
+                    float arTopoNorm = saturate(elevation / 4.2);
+                    float arIdleGlowFactor = 0.85 + _uArIdleBoost * 0.45;
+                    arNormElevation = saturate(0.28 + arTopoNorm * 0.54 + arMusicLift * 0.42);
+
+                    float arWarmFactor = saturate(warmBlend * 0.68 + arMusicLift * 0.32);
+                    float3 arCoreMix = lerp(coolCore, warmCore, arWarmFactor);
+                    float3 arEdgeMix = lerp(coolEdge, warmEdge, arWarmFactor);
+
+                    float tileRnd = frac(rnd * 17.31);
+                    float tileSpark = lerp(0.80, 1.18, tileRnd);
+
+                    // Luminous translucent mosaic body color with scattered theme ripple-accent crystal tiles
+                    float3 arCrystalMid = lerp(arCoreMix, arEdgeMix, 0.30 + 0.55 * frac(rnd * 11.0));
+                    float arAccentMix = glslSmoothstep(0.42, 0.96, frac(rnd * 23.7 + arHillsVal * 0.35)) * 0.38;
+                    arCrystalMid = lerp(arCrystalMid, _uRippleColor.rgb, arAccentMix);
+                    arCrystalMid = lerp(arCrystalMid, brightCool, _uBrightness * 0.45);
+
+                    // Rich saturated backlit crystal troughs (never black) + slim dark grounded chassis bottom
+                    float3 arCoolBase = lerp(coolCore, coolEdge, 0.25);
+                    float3 arDeepCrystal = arCoolBase * 0.44 + arCrystalMid * 0.14;
+                    arSideBottom = arDeepCrystal * 0.20;
+
+                    // Incandescent crest highlights for raised idle ridges & active audio peaks without blowing out flat white
+                    float arGlowScale = clamp(_uGlowIntensity, 0.75, 1.65) * 0.76 * arIdleGlowFactor;
+                    float arCrestMix = saturate(arTopoNorm * 0.80 + arMusicLift * 0.48);
+                    float3 arIncandescent = lerp(arCrystalMid, float3(1.0, 1.0, 1.0), 0.34 + 0.24 * arMusicLift);
+
+                    arCurrentGlow = lerp(arDeepCrystal, arCrystalMid, glslSmoothstep(0.04, 0.52, arCrestMix));
+                    arCurrentGlow = lerp(arCurrentGlow, arIncandescent, glslSmoothstep(0.46, 1.0, arCrestMix));
+                    arCurrentGlow *= tileSpark * arGlowScale * arDistFade;
+
+                    arCurrentGlow = lerp(arCurrentGlow, _uRippleColor.rgb * 1.12, rippleAnim.x);
+                    arCurrentGlow = lerp(arCurrentGlow, float3(1.16, 1.16, 1.16), rippleAnim.y);
+
+                    arSideMid = arCurrentGlow * 0.84;
+                    arTopBevelColor = lerp(arCurrentGlow, lerp(arEdgeMix, float3(1.0, 1.0, 1.0), 0.52), 0.44) * arDistFade;
+                    arActiveEnergy = saturate(arMusicLift * 1.35 + rippleAnim.x + rippleAnim.y);
+
+                    // Subtle directional X/Z facet contrast so adjacent 3D crystal cubes separate crisply
+                    if (abs(input.normalOS.x) > 0.5)
+                    {
+                        arFaceShade = (input.normalOS.x > 0.0) ? 1.06 : 0.80;
+                    }
+                    else if (abs(input.normalOS.z) > 0.5)
+                    {
+                        arFaceShade = (input.normalOS.z > 0.0) ? 0.94 : 0.72;
+                    }
+                }
+
+                float normElevation = lerp(vrNormElevation, arNormElevation, _uArMode);
+                float distFade = lerp(vrDistFade, arDistFade, _uArMode);
+                float3 currentGlow = lerp(vrCurrentGlow, arCurrentGlow, _uArMode);
+                float activeEnergy = lerp(vrActiveEnergy, arActiveEnergy, _uArMode);
 
                 output.currentGlowAndN = float4(currentGlow, normElevation);
 
                 float3 rippleAdd = _uRippleColor.rgb * rippleAnim.x * 0.75 + float3(1.0, 1.0, 1.0) * rippleAnim.y * 1.35;
-                float activeEnergy = saturate(normElevation * 1.65 + rippleAnim.x + rippleAnim.y);
                 output.rippleAddAndE = float4(rippleAdd, activeEnergy);
 
                 if (input.normalOS.y > 0.5)
                 {
-                    float topIntensity = glslSmoothstep(0.0, 0.36, normElevation);
+                    float topIntensity = glslSmoothstep(0.0, 0.36, vrNormElevation);
                     float twinkleDistFalloff = glslSmoothstep(58.0, 26.0, centerDist);
-                    float twinkleMultiplier = lerp(twinkleDistFalloff, 1.0, glslSmoothstep(0.01, 0.1, normElevation));
+                    float twinkleMultiplier = lerp(twinkleDistFalloff, 1.0, glslSmoothstep(0.01, 0.1, vrNormElevation));
+                    float arTwinkleMultiplier = 1.0;
 
-                    if (frac(rnd * 31.0) > 0.95 && normElevation < 0.1)
+                    if (frac(rnd * 31.0) > 0.95 && vrNormElevation < 0.1)
                     {
                         topIntensity += _uAir * 2.2 * twinkleMultiplier;
                     }
 
-                    float3 topBaseColor = lerp(cBase2, currentGlow, topIntensity);
+                    float3 vrTopBaseColor = lerp(vrBase2, vrCurrentGlow, topIntensity);
+                    float3 arTopBaseColor = arCurrentGlow * 0.94;
+                    if (_uArMode > 0.0001 && frac(rnd * 31.0) > 0.94)
+                    {
+                        arTopBaseColor += arTopBevelColor * (_uAir * 0.42);
+                    }
 
                     float flashChance = glslSmoothstep(0.3, 1.0, _uPresence);
                     if (frac(rnd * 53.0) > 0.98 - flashChance * 0.1)
                     {
                         float flashSync = sin(_uTime * 40.0 + rnd * 100.0) * 0.5 + 0.5;
-                        topBaseColor += lerp(float3(1.0, 1.0, 1.0), float3(0.5, 1.0, 1.0), rnd) * flashSync * _uPresence * (1.15 + _uSharpness * 2.2) * twinkleMultiplier;
+                        float3 flashColor = lerp(float3(1.0, 1.0, 1.0), float3(0.5, 1.0, 1.0), rnd) * flashSync * _uPresence * (1.15 + _uSharpness * 2.2);
+                        vrTopBaseColor += flashColor * twinkleMultiplier;
+                        arTopBaseColor += flashColor * (0.45 * arTwinkleMultiplier);
                     }
 
-                    float3 topEdgeGlow = currentGlow * 0.92 * (topIntensity + 0.24 * distFade);
+                    float3 vrTopEdgeGlow = vrCurrentGlow * 0.92 * (topIntensity + 0.24 * vrDistFade);
+                    float3 topBaseColor = lerp(vrTopBaseColor, arTopBaseColor, _uArMode);
+                    float3 topEdgeGlow = lerp(vrTopEdgeGlow, arTopBevelColor, _uArMode);
+
                     output.topBaseOrCBase1 = float4(topBaseColor, 1.0);
                     output.topEdgeOrCBase2 = float4(topEdgeGlow, distFade);
-                    output.brillianceSpark = (frac(rnd * 89.0 + _uTime * 2.0) > 0.98) ? (_uBrilliance * 3.4 * twinkleMultiplier) : 0.0;
+
+                    float sparkMul = lerp(twinkleMultiplier, 1.0, _uArMode);
+                    float spark = (frac(rnd * 89.0 + _uTime * 2.0) > 0.98) ? (_uBrilliance * 3.4 * sparkMul) : 0.0;
+                    output.sparkAndArData = float4(spark, 1.0, arMusicLift, 0.0);
                 }
                 else
                 {
-                    output.topBaseOrCBase1 = float4(cBase1, 0.0);
-                    output.topEdgeOrCBase2 = float4(cBase2, distFade);
-                    output.brillianceSpark = 0.0;
+                    float3 sideBase1 = lerp(vrBase1, arSideBottom, _uArMode);
+                    float3 sideBase2 = lerp(vrBase2, arSideMid, _uArMode);
+                    output.topBaseOrCBase1 = float4(sideBase1, 0.0);
+                    output.topEdgeOrCBase2 = float4(sideBase2, distFade);
+                    output.sparkAndArData = float4(0.0, arFaceShade, arMusicLift, 0.0);
                 }
 
                 return output;
@@ -417,38 +517,93 @@ Shader "SonicTopography/TerrainPillars"
 
                 if (input.topBaseOrCBase1.w > 0.5)
                 {
-                    // Top face
+                    // Top face (exact VR math preserved when _uArMode == 0)
                     float edgeX = glslSmoothstep(0.05, 0.01, uv.x) + glslSmoothstep(0.95, 0.99, uv.x);
                     float edgeY = glslSmoothstep(0.05, 0.01, uv.y) + glslSmoothstep(0.95, 0.99, uv.y);
                     float edge = min(edgeX + edgeY, 1.0);
-                    finalColor = input.topBaseOrCBase1.rgb + input.topEdgeOrCBase2.rgb * edge;
+                    float3 vrTopFinal = input.topBaseOrCBase1.rgb + input.topEdgeOrCBase2.rgb * edge;
 
                     // Brilliance micro-sparks strictly on edges
                     if (edge > 0.5)
                     {
-                        finalColor += input.brillianceSpark;
+                        vrTopFinal += input.sparkAndArData.x;
+                    }
+
+                    if (_uArMode > 0.001)
+                    {
+                        // Frosted translucent crystal-LED tile with luminous inner chamfer & crisp cube seam
+                        float2 edgeDist2 = min(uv, 1.0 - uv);
+                        float minEdge = min(edgeDist2.x, edgeDist2.y);
+                        float arBevelCrisp = 1.0 - glslSmoothstep(0.018, 0.11, minEdge);
+                        float arBevelSoft = 1.0 - glslSmoothstep(0.05, 0.26, minEdge);
+                        float2 centeredUV = (uv - 0.5) * 2.0;
+                        float arCoreGlow = 1.0 - saturate(dot(centeredUV, centeredUV)) * 0.18;
+
+                        float3 arTopFinal = input.topBaseOrCBase1.rgb * (0.88 + 0.16 * arCoreGlow)
+                                          + input.topEdgeOrCBase2.rgb * (arBevelSoft * 0.22 + arBevelCrisp * 0.44);
+
+                        float arOuterSeam = glslSmoothstep(0.0, 0.025, minEdge);
+                        arTopFinal *= lerp(0.82, 1.0, arOuterSeam);
+
+                        if (arBevelCrisp > 0.35)
+                        {
+                            arTopFinal += input.sparkAndArData.x * 0.65;
+                        }
+
+                        finalColor = lerp(vrTopFinal, arTopFinal, _uArMode);
+                    }
+                    else
+                    {
+                        finalColor = vrTopFinal;
                     }
                 }
                 else
                 {
-                    // Side faces
+                    // Side faces (exact VR math preserved when _uArMode == 0)
                     float distFromTop = 1.0 - relativeY;
                     float3 bodyColor = lerp(input.topBaseOrCBase1.rgb, input.topEdgeOrCBase2.rgb, relativeY * distFade);
                     float verticalFalloff = lerp(1.0, 3.0, _uSharpness);
                     float sideGlow = (normElevation < 0.02) ? 0.0 : (glslSmoothstep(0.5 / verticalFalloff, 0.0, distFromTop) * normElevation);
 
-                    finalColor = lerp(bodyColor, currentGlow, sideGlow * 1.65);
+                    float3 vrSideFinal = lerp(bodyColor, currentGlow, sideGlow * 1.65);
 
                     // Top Rim
                     float rimGlow = glslSmoothstep(0.035, 0.0, distFromTop) * normElevation;
-                    finalColor += currentGlow * rimGlow * 1.25;
+                    vrSideFinal += currentGlow * rimGlow * 1.25;
+
+                    if (_uArMode > 0.001)
+                    {
+                        // Backlit translucent crystal walls with grounded dark bottom chassis & directional X/Z facet contrast
+                        float baseGroundT = glslSmoothstep(0.06, 0.24, relativeY);
+                        float upperLiftT = glslSmoothstep(0.20, 1.0, relativeY);
+                        float3 arWallColor = lerp(input.topBaseOrCBase1.rgb, input.topEdgeOrCBase2.rgb, baseGroundT);
+                        arWallColor = lerp(arWallColor, currentGlow * 1.02, upperLiftT * (0.48 + 0.42 * normElevation));
+
+                        // Directional X vs Z face contrast so 3D blocks read as distinct physical cubes
+                        arWallColor *= input.sparkAndArData.y;
+
+                        // Subtle translucent corner edge refraction along vertical seams
+                        float sideEdgeX = 1.0 - glslSmoothstep(0.02, 0.14, min(uv.x, 1.0 - uv.x));
+                        arWallColor += currentGlow * sideEdgeX * baseGroundT * 0.18;
+
+                        // Luminous upper rim catching internal LED backlight
+                        float arRimGlow = glslSmoothstep(0.11, 0.0, distFromTop);
+                        arWallColor += currentGlow * arRimGlow * (0.28 + 0.34 * normElevation);
+
+                        finalColor = lerp(vrSideFinal, arWallColor, _uArMode);
+                    }
+                    else
+                    {
+                        finalColor = vrSideFinal;
+                    }
                 }
 
-                finalColor += input.rippleAddAndE.rgb;
+                finalColor += input.rippleAddAndE.rgb * lerp(1.0, 0.55, _uArMode);
 
-                // Quest 3 HDR Contrast Enhancement: keep unlit base deep, punch active glowing peaks
+                // Quest 3 HDR Contrast Enhancement: exact original in VR; gentler in AR so luminous crystal colors never clip flat white
                 float activeEnergy = input.rippleAddAndE.w;
-                finalColor = lerp(finalColor, finalColor * (1.18 + 0.36 * activeEnergy), activeEnergy);
+                float contrastGain = lerp(1.18 + 0.36 * activeEnergy, 1.04 + 0.20 * activeEnergy, _uArMode);
+                finalColor = lerp(finalColor, finalColor * contrastGain, activeEnergy);
 
                 // Smooth distance fade into backdropColor before linear conversion (bypassed cleanly in AR mode)
                 float preFade = lerp(1.0 - glslSmoothstep(32.0, 74.0, vertexDist), 1.0, _uArMode);
@@ -462,29 +617,16 @@ Shader "SonicTopography/TerrainPillars"
                 float voidFade = preFade * preFade;
                 finalColor = lerp(_uBackdropLinear.rgb, finalColor, voidFade);
 
-                // Subtle Quest 3 passthrough camera blending (temporal micro-grain & gentle edge softening)
+                // Very subtle Quest 3 passthrough camera micro-grain (keeps crystal blocks jewel-like and crisp)
                 if (_uArMode > 0.001)
                 {
                     float pixelHash = frac(sin(dot(floor(input.positionCS.xy), float2(12.9898, 78.233)) + _uTime * 19.37) * 43758.5453);
-                    float grain = (pixelHash - 0.5) * 0.022 * _uArMode;
-                    finalColor = max(0.0, finalColor + grain * (0.25 + 0.75 * saturate(dot(finalColor, float3(0.3, 0.59, 0.11)))));
-
-                    float2 edgeDistUV = min(uv, 1.0 - uv);
-                    float edgeSoft = smoothstep(0.0, 0.035, min(edgeDistUV.x, edgeDistUV.y));
-                    finalColor *= lerp(1.0, lerp(0.92, 1.0, edgeSoft), _uArMode);
+                    float grain = (pixelHash - 0.5) * 0.012 * _uArMode;
+                    finalColor = max(0.0, finalColor + grain * (0.20 + 0.65 * saturate(dot(finalColor, float3(0.3, 0.59, 0.11)))));
                 }
 
-                half4 finalOut = half4(finalColor, 1.0h);
-
-                #if defined(HARD_OCCLUSION) || defined(SOFT_OCCLUSION)
-                if (_uArMode > 0.01 && _uArOcclusionEnabled > 0.5)
-                {
-                    float occ = CalculateEnvironmentDepthOcclusion(input.worldPos, _EnvironmentDepthBias);
-                    finalOut *= (half)occ;
-                }
-                #endif
-
-                return finalOut;
+                // Real Occlusion intentionally bypassed in AR for now so crystal pillars render crisply opaque with zero depth artifacts
+                return half4(finalColor, 1.0h);
             }
             ENDHLSL
         }

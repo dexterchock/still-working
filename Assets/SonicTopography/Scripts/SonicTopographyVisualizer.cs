@@ -159,7 +159,8 @@ namespace SonicTopography
             _arPlatterPos = arPos;
             _arPlatterRot = arRot;
             _arPlatterScale = Mathf.Max(0.0005f, arScale);
-            _arOcclusionEnabled = occlusionEnabled;
+            // Real Occlusion disabled for now so AR crystal pillars always render crisply opaque without depth-map artifacts
+            _arOcclusionEnabled = false;
             _arIsSnapped = isSnapped;
 
             Vector3 effectivePos = _arBlend > 0.0001f ? _arPlatterPos : platterWorldPosition;
@@ -185,7 +186,7 @@ namespace SonicTopography
             {
                 _terrainMaterial.SetMatrix(PropPlatterMatrix, Matrix4x4.TRS(effectivePos, effectiveRot, Vector3.one * effectiveScale));
                 _terrainMaterial.SetFloat(PropUArMode, _arBlend);
-                _terrainMaterial.SetFloat(PropUArOcclusionEnabled, _arOcclusionEnabled ? 1f : 0f);
+                _terrainMaterial.SetFloat(PropUArOcclusionEnabled, 0f);
                 _terrainMaterial.SetFloat(PropEnvironmentDepthBias, _arIsSnapped ? 0.032f : 0.012f);
             }
         }

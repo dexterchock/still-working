@@ -37,6 +37,11 @@ namespace SonicTopography
         private const string PrefSurfaceSnap = "SonicTopography_ArSurfaceSnap";
         private const float TransitionDurationSeconds = 1.10f;
         private const float SurfaceSnapClearanceMeters = 0.018f;
+        private const MRUKAnchor.SceneLabels CleanRoomLightLabels =
+            MRUKAnchor.SceneLabels.FLOOR |
+            MRUKAnchor.SceneLabels.CEILING |
+            MRUKAnchor.SceneLabels.WALL_FACE |
+            MRUKAnchor.SceneLabels.TABLE;
 
         public static SonicMixedRealityManager Instance { get; private set; }
 
@@ -96,13 +101,11 @@ namespace SonicTopography
             get => _realOcclusionEnabled;
             set
             {
-                if (_realOcclusionEnabled != value)
-                {
-                    _realOcclusionEnabled = value;
-                    PlayerPrefs.SetInt(PrefRealOcclusion, value ? 1 : 0);
-                    PlayerPrefs.Save();
-                    SyncDepthManagerState();
-                }
+                // Real Occlusion is disabled for now so we focus strictly on realistic Room Glow.
+                _realOcclusionEnabled = false;
+                PlayerPrefs.SetInt(PrefRealOcclusion, 0);
+                PlayerPrefs.Save();
+                SyncDepthManagerState();
             }
         }
 
@@ -119,7 +122,10 @@ namespace SonicTopography
                     if (!value)
                     {
                         _isArSnappedToSurface = false;
+                        _snappedViaDepthRaycast = false;
+                        _lastSnapWasDepthRaycast = false;
                         _arSurfaceNormal = Vector3.up;
+                        SyncRoomEffectVisibility();
                     }
                 }
             }
@@ -168,7 +174,6 @@ namespace SonicTopography
         private bool _isArSnappedToSurface = false;
         private bool _snappedViaDepthRaycast = false;
         private bool _lastSnapWasDepthRaycast = false;
-        private bool _loggedDepthAvailableOnce = false;
         private Vector3 _arSurfaceNormal = Vector3.up;
 
         // Transition snapshot poses
@@ -184,7 +189,7 @@ namespace SonicTopography
         // Persistent AR settings
         private float _roomGlow = DefaultRoomGlow;
         private bool _roomLightEnabled = true;
-        private bool _realOcclusionEnabled = true;
+        private bool _realOcclusionEnabled = false;
         private bool _surfaceSnapEnabled = true;
 
         // Scene permission & loading state
@@ -215,7 +220,6 @@ namespace SonicTopography
         private static readonly int IdRoomRipplePts = Shader.PropertyToID("_uSonicRoomRipplePosTimeStrength");
         private static readonly int IdRoomRippleState = Shader.PropertyToID("_uSonicRoomRippleState");
         private static readonly int IdLocalDiscFadeRadius = Shader.PropertyToID("_uLocalDiscFadeRadius");
-        private static readonly int IdEnvironmentDepthBias = Shader.PropertyToID("_EnvironmentDepthBias");
 
         private void Awake()
         {
@@ -287,7 +291,7 @@ namespace SonicTopography
         {
             _roomGlow = PlayerPrefs.GetFloat(PrefRoomGlow, DefaultRoomGlow);
             _roomLightEnabled = PlayerPrefs.GetInt(PrefRoomLight, 1) == 1;
-            _realOcclusionEnabled = PlayerPrefs.GetInt(PrefRealOcclusion, 1) == 1;
+            _realOcclusionEnabled = false;
             _surfaceSnapEnabled = PlayerPrefs.GetInt(PrefSurfaceSnap, 1) == 1;
         }
 
@@ -342,6 +346,8 @@ namespace SonicTopography
                     ComputeDefaultArTabletopPose(camT, out _arTargetPos, out _arTargetRot);
                     _arTargetScale = DefaultArDiameterMeters / (PlatterLocalRadiusUnits * 2f);
                     _isArSnappedToSurface = false;
+                    _snappedViaDepthRaycast = false;
+                    _lastSnapWasDepthRaycast = false;
                     _arSurfaceNormal = Vector3.up;
                 }
 
@@ -535,7 +541,7 @@ namespace SonicTopography
                 {
                     _depthManager.CustomTrackingSpace = _xrOrigin.CameraFloorOffsetObject.transform;
                 }
-                _depthManager.OcclusionShadersMode = OcclusionShadersMode.SoftOcclusion;
+                _depthManager.OcclusionShadersMode = OcclusionShadersMode.None;
                 _depthManager.RemoveHands = false;
                 _depthManager.enabled = false;
                 if (_depthRigGo != null && !_depthRigGo.activeSelf)
@@ -570,18 +576,7 @@ namespace SonicTopography
                 _effectMesh.HideMesh = true;
                 _effectMesh.Layer = _mrukRoomLayer;
                 _effectMesh.CutHoles = MRUKAnchor.SceneLabels.DOOR_FRAME | MRUKAnchor.SceneLabels.WINDOW_FRAME;
-                _effectMesh.Labels = MRUKAnchor.SceneLabels.FLOOR |
-                                     MRUKAnchor.SceneLabels.CEILING |
-                                     MRUKAnchor.SceneLabels.WALL_FACE |
-                                     MRUKAnchor.SceneLabels.INVISIBLE_WALL_FACE |
-                                     MRUKAnchor.SceneLabels.INNER_WALL_FACE |
-                                     MRUKAnchor.SceneLabels.TABLE |
-                                     MRUKAnchor.SceneLabels.COUCH |
-                                     MRUKAnchor.SceneLabels.OTHER |
-                                     MRUKAnchor.SceneLabels.STORAGE |
-                                     MRUKAnchor.SceneLabels.BED |
-                                     MRUKAnchor.SceneLabels.SCREEN |
-                                     MRUKAnchor.SceneLabels.GLOBAL_MESH;
+                _effectMesh.Labels = CleanRoomLightLabels;
 
                 _raycastManager = _mrukRoot.AddComponent<EnvironmentRaycastManager>();
                 if (_xrOrigin != null && _xrOrigin.CameraFloorOffsetObject != null)
@@ -634,7 +629,6 @@ namespace SonicTopography
                     name = "SonicRoomLightWashRuntime",
                     enableInstancing = true
                 };
-                _roomLightWashMat.SetFloat(IdEnvironmentDepthBias, 0.075f);
                 _roomLightWashMat.SetFloat(IdLocalDiscFadeRadius, 0f);
             }
         }
@@ -648,10 +642,9 @@ namespace SonicTopography
                 name = "SonicArLocalGlowCatcherMat",
                 enableInstancing = true
             };
-            _localGlowCatcherMat.SetFloat(IdEnvironmentDepthBias, 0.075f);
-            _localGlowCatcherMat.SetFloat(IdLocalDiscFadeRadius, 2.85f);
+            _localGlowCatcherMat.SetFloat(IdLocalDiscFadeRadius, 1.6f);
 
-            _localGlowCatcherMesh = CreateLocalGlowDiscMesh(3.0f, 48);
+            _localGlowCatcherMesh = CreateLocalGlowDiscMesh(2.6f, 48);
             _localGlowCatcherGo = new GameObject("SonicArLocalGlowCatcher");
             _localGlowCatcherGo.transform.SetParent(_mrInfraRoot.transform, false);
             MeshFilter mf = _localGlowCatcherGo.AddComponent<MeshFilter>();
@@ -749,25 +742,21 @@ namespace SonicTopography
 
         private void SyncDepthManagerState()
         {
-            if (_depthManager == null) return;
-            bool shouldRun = IsArVisualActive && _realOcclusionEnabled && HasScenePermission;
-            try
+            if (_depthManager != null)
             {
-                if (EnvironmentDepthManager.IsSupported)
+                // Real Occlusion is disabled for now so we focus strictly on realistic Room Glow.
+                try
                 {
-                    _depthManager.OcclusionShadersMode = shouldRun
-                        ? OcclusionShadersMode.SoftOcclusion
-                        : OcclusionShadersMode.None;
-                    _depthManager.enabled = shouldRun;
-                }
-                else
-                {
+                    if (EnvironmentDepthManager.IsSupported)
+                    {
+                        _depthManager.OcclusionShadersMode = OcclusionShadersMode.None;
+                    }
                     _depthManager.enabled = false;
                 }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[SonicMR] EnvironmentDepthManager toggle ignored: {ex.Message}");
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[SonicMR] EnvironmentDepthManager disable ignored: {ex.Message}");
+                }
             }
 
             if (_raycastManager != null)
@@ -791,33 +780,38 @@ namespace SonicTopography
 
             if (_effectMesh.EffectMeshObjects.Count == 0)
             {
-                bool hasSemanticPlanes = false;
+                bool hasCleanPlanes = false;
                 foreach (MRUKAnchor a in room.Anchors)
                 {
-                    if (a != null && a.HasAnyLabel(MRUKAnchor.SceneLabels.FLOOR | MRUKAnchor.SceneLabels.WALL_FACE))
+                    if (a != null && a.HasAnyLabel(CleanRoomLightLabels))
                     {
-                        hasSemanticPlanes = true;
+                        hasCleanPlanes = true;
                         break;
                     }
                 }
 
-                MRUKAnchor.SceneLabels baseLabels =
-                    MRUKAnchor.SceneLabels.FLOOR |
-                    MRUKAnchor.SceneLabels.CEILING |
-                    MRUKAnchor.SceneLabels.WALL_FACE |
-                    MRUKAnchor.SceneLabels.INVISIBLE_WALL_FACE |
-                    MRUKAnchor.SceneLabels.INNER_WALL_FACE |
-                    MRUKAnchor.SceneLabels.TABLE |
-                    MRUKAnchor.SceneLabels.COUCH |
-                    MRUKAnchor.SceneLabels.OTHER |
-                    MRUKAnchor.SceneLabels.STORAGE |
-                    MRUKAnchor.SceneLabels.BED |
-                    MRUKAnchor.SceneLabels.SCREEN;
-
-                _effectMesh.Labels = hasSemanticPlanes ? baseLabels : (baseLabels | MRUKAnchor.SceneLabels.GLOBAL_MESH);
-                _effectMesh.CreateMesh(room);
-                Debug.Log($"[SonicMR] Populated EffectMesh anchors={room.Anchors.Count}, hasSemanticPlanes={hasSemanticPlanes}, meshes={_effectMesh.EffectMeshObjects.Count}");
+                _effectMesh.Labels = CleanRoomLightLabels;
+                if (hasCleanPlanes)
+                {
+                    _effectMesh.CreateMesh(room);
+                }
+                Debug.Log($"[SonicMR] Populated clean EffectMesh anchors={room.Anchors.Count}, hasCleanPlanes={hasCleanPlanes}, meshes={_effectMesh.EffectMeshObjects.Count}");
             }
+        }
+
+        private bool HasMrukPlaneUnderPlatter(Vector3 platterPos, Vector3 upN)
+        {
+            if (_effectMesh == null || _effectMesh.EffectMeshObjects.Count == 0) return false;
+            int mask = 1 << _mrukRoomLayer;
+            return Physics.Raycast(platterPos + upN * 0.02f, -upN, 0.09f, mask);
+        }
+
+        private bool ShouldShowLocalGlowCatcher(Vector3 platterPos, Vector3 upN)
+        {
+            // Never activate local glow disc in mid-air; only when snapped via Depth raycast onto an unscanned surface
+            if (!IsArVisualActive || !_roomLightEnabled) return false;
+            if (!_isArSnappedToSurface || !_snappedViaDepthRaycast) return false;
+            return !HasMrukPlaneUnderPlatter(platterPos, upN);
         }
 
         private void SyncRoomEffectVisibility()
@@ -837,7 +831,8 @@ namespace SonicTopography
 
             if (_localGlowCatcherGo != null)
             {
-                bool showFallbackDisc = IsArVisualActive && _roomLightEnabled && (!hasMrukMeshes || _snappedViaDepthRaycast);
+                GetCurrentTerrainPose(out Vector3 platterPos, out Quaternion platterRot, out _, out _);
+                bool showFallbackDisc = ShouldShowLocalGlowCatcher(platterPos, platterRot * Vector3.up);
                 if (_localGlowCatcherGo.activeSelf != showFallbackDisc)
                 {
                     _localGlowCatcherGo.SetActive(showFallbackDisc);
@@ -1076,13 +1071,7 @@ namespace SonicTopography
 
             if (_visualizer != null)
             {
-                bool occlusionActive = IsArVisualActive && _realOcclusionEnabled &&
-                                       _depthManager != null && _depthManager.enabled && _depthManager.IsDepthAvailable;
-                if (occlusionActive && !_loggedDepthAvailableOnce)
-                {
-                    _loggedDepthAvailableOnce = true;
-                    Debug.Log($"[SonicMR] EnvironmentDepth active! IsSupported={EnvironmentDepthManager.IsSupported}, IsDepthAvailable={_depthManager.IsDepthAvailable}");
-                }
+                const bool occlusionActive = false;
                 _visualizer.SetArModeState(_arBlend, platterPos, platterRot, platterScale, occlusionActive, _isArSnappedToSurface);
                 _visualizer.GetCurrentEffectivePlatterPose(out platterPos, out platterRot, out platterScale);
                 platterWorldRadius = PlatterLocalRadiusUnits * Mathf.Max(0.0005f, platterScale);
@@ -1110,7 +1099,7 @@ namespace SonicTopography
                         _arBlend,
                         Time.time));
                     Shader.SetGlobalVector(IdRoomOcc, new Vector4(
-                        occlusionActive ? 1f : 0f,
+                        0f,
                         1f,
                         0.5f + 0.5f * Mathf.Sin(Time.time * 1.4f),
                         0f));
@@ -1122,8 +1111,7 @@ namespace SonicTopography
 
                     if (_localGlowCatcherGo != null)
                     {
-                        bool hasMrukMeshes = _effectMesh != null && _effectMesh.EffectMeshObjects.Count > 0;
-                        bool showFallbackDisc = IsArVisualActive && _roomLightEnabled && (!hasMrukMeshes || _snappedViaDepthRaycast);
+                        bool showFallbackDisc = ShouldShowLocalGlowCatcher(platterPos, upN);
                         if (_localGlowCatcherGo.activeSelf != showFallbackDisc)
                         {
                             _localGlowCatcherGo.SetActive(showFallbackDisc);
@@ -1131,8 +1119,12 @@ namespace SonicTopography
                         if (showFallbackDisc)
                         {
                             _localGlowCatcherGo.transform.SetPositionAndRotation(
-                                platterPos + upN * 0.003f,
+                                platterPos - upN * (SurfaceSnapClearanceMeters - 0.002f),
                                 Quaternion.FromToRotation(Vector3.up, upN));
+                            if (_localGlowCatcherMat != null)
+                            {
+                                _localGlowCatcherMat.SetFloat(IdLocalDiscFadeRadius, Mathf.Clamp(platterWorldRadius * 3.4f, 0.85f, 2.35f));
+                            }
                         }
                     }
                 }
