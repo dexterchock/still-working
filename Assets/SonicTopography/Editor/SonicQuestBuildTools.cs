@@ -171,6 +171,7 @@ namespace SonicTopography.Editor
             CreateOrUpdateMaterialAsset(matDir, "SonicBrowserUnderlayPunchout", "Shaders/SonicBrowserUnderlayPunchout", "SonicTopography/BrowserUnderlayPunchout");
             CreateOrUpdateMaterialAsset(matDir, "SonicRoomLightWash", "Shaders/SonicRoomLightWash", "SonicTopography/RoomLightWash");
             CreateOrUpdateMaterialAsset(matDir, "SonicArVoidDissolveDome", "Shaders/SonicArVoidDissolveDome", "SonicTopography/ArVoidDissolveDome");
+            CreateOrUpdateMaterialAsset(matDir, "SonicTerrainEmissionBake", "Shaders/SonicTerrainEmissionBake", "SonicTopography/TerrainEmissionBake");
         }
 
         private static void CreateOrUpdateMaterialAsset(string matDir, string name, string resPath, string shaderName)

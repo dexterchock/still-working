@@ -155,6 +155,9 @@ namespace SonicTopography
         private Mesh _dissolveDomeMesh;
         private Material _dissolveDomeMat;
         private Material _roomLightWashMat;
+        private Material _emissionBakeMat;
+        private RenderTexture _terrainEmissionRT;
+        private readonly HashSet<Mesh> _filteredTableMeshes = new HashSet<Mesh>();
         private GameObject _localGlowCatcherGo;
         private Mesh _localGlowCatcherMesh;
         private Material _localGlowCatcherMat;
@@ -220,6 +223,8 @@ namespace SonicTopography
         private static readonly int IdRoomRipplePts = Shader.PropertyToID("_uSonicRoomRipplePosTimeStrength");
         private static readonly int IdRoomRippleState = Shader.PropertyToID("_uSonicRoomRippleState");
         private static readonly int IdLocalDiscFadeRadius = Shader.PropertyToID("_uLocalDiscFadeRadius");
+        private static readonly int IdRoomEmissionTex = Shader.PropertyToID("_uSonicTerrainEmissionTex");
+        private static readonly int IdRoomHasEmissionTex = Shader.PropertyToID("_uSonicRoomHasEmissionTex");
 
         private void Awake()
         {
@@ -551,6 +556,7 @@ namespace SonicTopography
             }
 
             EnsureRoomLightWashMaterial();
+            EnsureTerrainEmissionResources();
             EnsureLocalGlowCatcher();
 
             if (_mrukRoot == null)
@@ -630,6 +636,38 @@ namespace SonicTopography
                     enableInstancing = true
                 };
                 _roomLightWashMat.SetFloat(IdLocalDiscFadeRadius, 0f);
+            }
+        }
+
+        private void EnsureTerrainEmissionResources()
+        {
+            if (_emissionBakeMat == null)
+            {
+                Shader bakeShader = Resources.Load<Shader>("Shaders/SonicTerrainEmissionBake");
+                if (bakeShader == null) bakeShader = Shader.Find("SonicTopography/TerrainEmissionBake");
+                if (bakeShader != null)
+                {
+                    _emissionBakeMat = new Material(bakeShader)
+                    {
+                        name = "SonicTerrainEmissionBakeRuntime"
+                    };
+                }
+            }
+
+            if (_terrainEmissionRT == null && _emissionBakeMat != null)
+            {
+                RenderTextureFormat fmt = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
+                    ? RenderTextureFormat.ARGBHalf
+                    : RenderTextureFormat.ARGB32;
+                _terrainEmissionRT = new RenderTexture(64, 64, 0, fmt, RenderTextureReadWrite.Linear)
+                {
+                    name = "SonicTerrainEmission64RT",
+                    useMipMap = true,
+                    autoGenerateMips = false,
+                    filterMode = FilterMode.Trilinear,
+                    wrapMode = TextureWrapMode.Clamp
+                };
+                _terrainEmissionRT.Create();
             }
         }
 
@@ -796,6 +834,72 @@ namespace SonicTopography
                     _effectMesh.CreateMesh(room);
                 }
                 Debug.Log($"[SonicMR] Populated clean EffectMesh anchors={room.Anchors.Count}, hasCleanPlanes={hasCleanPlanes}, meshes={_effectMesh.EffectMeshObjects.Count}");
+            }
+
+            StripVerticalFacesFromTableEffectMeshes();
+        }
+
+        /// <summary>
+        /// MRUK TABLE EffectMesh generates a closed 6-sided cube whose 4 vertical side walls hang in mid-air
+        /// under desks/tables. Strip all non-top triangles so only the real horizontal tabletop catches light.
+        /// </summary>
+        private void StripVerticalFacesFromTableEffectMeshes()
+        {
+            if (_effectMesh == null || _effectMesh.EffectMeshObjects.Count == 0) return;
+
+            foreach (var kv in _effectMesh.EffectMeshObjects)
+            {
+                MRUKAnchor anchor = kv.Key;
+                EffectMesh.EffectMeshObject emo = kv.Value;
+                if (anchor == null || emo == null || emo.mesh == null || emo.effectMeshGO == null) continue;
+                if (!anchor.HasAnyLabel(MRUKAnchor.SceneLabels.TABLE)) continue;
+                if (_filteredTableMeshes.Contains(emo.mesh)) continue;
+
+                Mesh mesh = emo.mesh;
+                if (!mesh.isReadable)
+                {
+                    _filteredTableMeshes.Add(mesh);
+                    continue;
+                }
+
+                Vector3[] verts = mesh.vertices;
+                Vector3[] norms = mesh.normals;
+                int[] tris = mesh.triangles;
+                if (verts == null || tris == null || tris.Length < 3)
+                {
+                    _filteredTableMeshes.Add(mesh);
+                    continue;
+                }
+
+                Transform meshT = emo.effectMeshGO.transform;
+                bool hasNormals = norms != null && norms.Length == verts.Length;
+                List<int> keptTris = new List<int>(tris.Length / 3);
+
+                for (int i = 0; i + 2 < tris.Length; i += 3)
+                {
+                    int i0 = tris[i];
+                    int i1 = tris[i + 1];
+                    int i2 = tris[i + 2];
+                    if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= verts.Length || i1 >= verts.Length || i2 >= verts.Length) continue;
+
+                    Vector3 localN = hasNormals
+                        ? (norms[i0] + norms[i1] + norms[i2])
+                        : Vector3.Cross(verts[i1] - verts[i0], verts[i2] - verts[i0]);
+                    if (localN.sqrMagnitude < 1e-6f) continue;
+
+                    Vector3 worldN = meshT.TransformDirection(localN.normalized).normalized;
+                    if (worldN.y > 0.65f)
+                    {
+                        keptTris.Add(i0);
+                        keptTris.Add(i1);
+                        keptTris.Add(i2);
+                    }
+                }
+
+                mesh.triangles = keptTris.ToArray();
+                mesh.RecalculateBounds();
+                _filteredTableMeshes.Add(mesh);
+                Debug.Log($"[SonicMR] Stripped vertical/bottom faces from TABLE EffectMesh '{anchor.name}': kept {keptTris.Count / 3}/{tris.Length / 3} top tris");
             }
         }
 
@@ -1019,6 +1123,10 @@ namespace SonicTopography
             {
                 _nextAudioRoomSyncTime = Time.unscaledTime + 0.1f;
                 ApplySpatialAudioForCurrentState();
+                if (IsArVisualActive)
+                {
+                    StripVerticalFacesFromTableEffectMeshes();
+                }
             }
         }
 
@@ -1079,6 +1187,26 @@ namespace SonicTopography
                 // Push live platter + theme + ripple state to SonicRoomLightWash globals
                 if (_arBlend > 0.001f && _roomLightEnabled)
                 {
+                    EnsureTerrainEmissionResources();
+                    if (_emissionBakeMat != null && _terrainEmissionRT != null)
+                    {
+                        if (!_terrainEmissionRT.IsCreated())
+                        {
+                            _terrainEmissionRT.Create();
+                        }
+                        _visualizer.CopyLiveTerrainUniformsTo(_emissionBakeMat);
+                        RenderTexture prevRt = RenderTexture.active;
+                        Graphics.Blit(null, _terrainEmissionRT, _emissionBakeMat);
+                        _terrainEmissionRT.GenerateMips();
+                        RenderTexture.active = prevRt;
+                        Shader.SetGlobalTexture(IdRoomEmissionTex, _terrainEmissionRT);
+                        Shader.SetGlobalFloat(IdRoomHasEmissionTex, 1f);
+                    }
+                    else
+                    {
+                        Shader.SetGlobalFloat(IdRoomHasEmissionTex, 0f);
+                    }
+
                     Vector3 upN = platterRot * Vector3.up;
                     Vector3 rightV = platterRot * Vector3.right;
                     Vector3 fwdV = platterRot * Vector3.forward;
@@ -1118,7 +1246,7 @@ namespace SonicTopography
                         }
                         if (showFallbackDisc)
                         {
-                            float localMaxRange = Mathf.Clamp(platterWorldRadius * 2.5f + 0.35f, 0.75f, 1.55f);
+                            float localMaxRange = Mathf.Clamp(platterWorldRadius * 2.4f + 0.32f, 0.72f, 1.45f);
                             float fadeRadius = platterWorldRadius + localMaxRange;
                             _localGlowCatcherGo.transform.SetPositionAndRotation(
                                 platterPos - upN * (SurfaceSnapClearanceMeters - 0.002f),
@@ -1133,6 +1261,7 @@ namespace SonicTopography
                 }
                 else
                 {
+                    Shader.SetGlobalFloat(IdRoomHasEmissionTex, 0f);
                     Shader.SetGlobalVector(IdRoomFx, new Vector4(0f, 0f, 0f, Time.time));
                     if (_localGlowCatcherGo != null && _localGlowCatcherGo.activeSelf)
                     {
@@ -1448,7 +1577,16 @@ namespace SonicTopography
             Shader.SetGlobalFloat(IdSonicArModeGlobal, 0f);
             Shader.SetGlobalVector(IdDissolveParams, Vector4.zero);
             Shader.SetGlobalVector(IdDomeParams, Vector4.zero);
+            Shader.SetGlobalFloat(IdRoomHasEmissionTex, 0f);
             if (_roomLightWashMat != null) Destroy(_roomLightWashMat);
+            if (_emissionBakeMat != null) Destroy(_emissionBakeMat);
+            if (_terrainEmissionRT != null)
+            {
+                _terrainEmissionRT.Release();
+                Destroy(_terrainEmissionRT);
+                _terrainEmissionRT = null;
+            }
+            _filteredTableMeshes.Clear();
             if (_localGlowCatcherMat != null) Destroy(_localGlowCatcherMat);
             if (_localGlowCatcherMesh != null) Destroy(_localGlowCatcherMesh);
             if (_dissolveDomeMat != null) Destroy(_dissolveDomeMat);

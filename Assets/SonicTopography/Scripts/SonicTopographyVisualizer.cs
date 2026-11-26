@@ -118,12 +118,50 @@ namespace SonicTopography
         private bool _arIsSnapped = false;
         private bool _vrEffectsHidden = false;
 
+        // Cached per-frame audio/material state for offscreen emission baking
+        private float _lastSharpness;
+        private float _lastSmoothness;
+        private float _lastDensity;
+        private float _lastSpectralCentroid;
+        private float _lastBrightness;
+        private float _lastAmplitudeMultiplier = 1f;
+        private float _lastElapsedTime;
+
         public float CurrentPlatterRotationDegrees => _platterRotationRad * Mathf.Rad2Deg;
         public float LastAudioEnergy { get; private set; }
         public float LastBassEnergy { get; private set; }
         public float LastWarmth { get; private set; }
         public Vector4[] RipplePosTimeStrengthBuffer => _ripplePosTimeStrength;
         public Vector4[] RippleStateBuffer => _rippleState;
+
+        public void CopyLiveTerrainUniformsTo(Material targetMat)
+        {
+            if (targetMat == null) return;
+
+            targetMat.SetFloat(PropUTime, _lastElapsedTime);
+            targetMat.SetFloat(PropUSubBass, _smSubBass);
+            targetMat.SetFloat(PropUBass, _smBass);
+            targetMat.SetFloat(PropULowMid, _smLowMid);
+            targetMat.SetFloat(PropUMid, _smMid);
+            targetMat.SetFloat(PropUHighMid, _smHighMid);
+            targetMat.SetFloat(PropUPresence, _smPresence);
+            targetMat.SetFloat(PropUBrilliance, _smBrilliance);
+            targetMat.SetFloat(PropUAir, _smAir);
+
+            targetMat.SetFloat(PropUWarmth, LastWarmth);
+            targetMat.SetFloat(PropUBrightness, _lastBrightness);
+            targetMat.SetFloat(PropUSharpness, _lastSharpness);
+            targetMat.SetFloat(PropUSmoothness, _lastSmoothness);
+            targetMat.SetFloat(PropUDensity, _lastDensity);
+            targetMat.SetFloat(PropUSpectralCentroid, _lastSpectralCentroid);
+            targetMat.SetFloat(PropUEnergy, LastAudioEnergy);
+            targetMat.SetFloat(PropUAmplitude, _lastAmplitudeMultiplier);
+            targetMat.SetFloat(PropUArMode, _arBlend);
+
+            targetMat.SetVectorArray(PropRipplePosTimeStrength, _ripplePosTimeStrength);
+            targetMat.SetVectorArray(PropRippleState, _rippleState);
+            SetThemeUniforms(targetMat, _currentColors);
+        }
 
         public void TriggerRippleAtLocalPos(Vector2 localXZ, float strength, bool isWhite = false)
         {
@@ -1035,6 +1073,13 @@ namespace SonicTopography
             LastAudioEnergy = eqEnergy;
             LastBassEnergy = _smBass;
             LastWarmth = uWarmth;
+            _lastSharpness = data.sharpness;
+            _lastSmoothness = data.smoothness;
+            _lastDensity = data.density;
+            _lastSpectralCentroid = data.spectralCentroid;
+            _lastBrightness = uBrightness;
+            _lastAmplitudeMultiplier = amplitudeMultiplier;
+            _lastElapsedTime = elapsed;
 
             float maxRippleAge = _arBlend > 0.05f ? 11.0f : 7.5f;
             for (int r = 0; r < MAX_RIPPLES; r++)
