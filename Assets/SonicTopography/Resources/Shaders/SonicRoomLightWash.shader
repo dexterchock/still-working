@@ -73,6 +73,12 @@ Shader "SonicTopography/RoomLightWash"
                 return fallbackCol;
             }
 
+            float3 boostContrastSubtle(float3 e)
+            {
+                float eLum = max(e.r, max(e.g, e.b));
+                return e * lerp(0.82, 1.16, smoothstep(0.08, 1.35, eLum));
+            }
+
             struct Attributes
             {
                 float4 positionOS : POSITION;
@@ -189,48 +195,26 @@ Shader "SonicTopography/RoomLightWash"
                 //    Samples live 64x64 mipmapped terrain emission map at distance-proportional LOD:
                 //    bright rim peaks cast vivid local pools; dark valleys stay dark!
                 // =========================================================================
-                float contactRange = clamp(platterRadius * 0.68, 0.16, 0.30);
-
-                // Pull emitter UV inward from rim; on coplanar grounded surfaces pull gradually inward with distance
-                // and raise mip LOD + 3-tap tangential arc blend to eliminate radial spoke streaks
-                float groundedEmitterFrac = lerp(0.88, 0.50, saturate(closestDist / contactRange));
-                float emitterFrac = lerp(0.90, groundedEmitterFrac, coplanarSurface);
-                float emitterRadial = min(radialDist, platterRadius * emitterFrac);
+                // Pull emitter UV slightly inward (~10%) from rim so perimeter bounce catches bright edge pillars
+                float emitterRadial = min(radialDist, platterRadius * 0.90);
                 float3 emitterPlanarWS = inPlaneDir * emitterRadial;
                 float2 emitterUV = float2(dot(emitterPlanarWS, platterRight), dot(emitterPlanarWS, platterFwd))
                                  / (2.0 * platterRadius) + 0.5;
 
-                // Tight contact zone (0..0.20m): mip 1.45..2.45 (floating/wall) or 2.65..4.75 (grounded coplanar)
+                // Tight contact zone (0..0.20m): mip 1.4..2.4; wider bounce (0.20..0.95m): climbs to mip 3.5..5.4
                 float contactBlend = saturate(closestDist / max(0.20, platterRadius * 0.65));
                 float wideBlend = saturate((closestDist - 0.18) / max(0.35, maxRange - 0.18));
-                float baseBounceLod = lerp(1.45, 2.45, contactBlend) + wideBlend * 2.95;
-                float groundedLodT = saturate(closestDist / max(0.14, platterRadius * 0.55));
-                float groundedBounceLod = min(5.40, lerp(2.65, 4.75, groundedLodT) + wideBlend * 0.65);
-                float bounceLod = lerp(baseBounceLod, groundedBounceLod, coplanarSurface);
+                float bounceLod = lerp(1.45, 2.45, contactBlend) + wideBlend * 2.95;
+                float3 bounceEmission = boostContrastSubtle(sampleTerrainEmission(emitterUV, bounceLod, fallbackCol));
 
-                float3 bounceEmission = sampleTerrainEmission(emitterUV, bounceLod, fallbackCol);
-                if (coplanarSurface > 0.001)
-                {
-                    float3 rimTangent = cross(platterN, inPlaneDir);
-                    float arcSpread = clamp(closestDist * 0.55, 0.03, platterRadius * 0.45);
-                    float3 tapPlusWS = emitterPlanarWS + rimTangent * arcSpread;
-                    float3 tapMinusWS = emitterPlanarWS - rimTangent * arcSpread;
-                    float2 uvPlus = float2(dot(tapPlusWS, platterRight), dot(tapPlusWS, platterFwd)) / (2.0 * platterRadius) + 0.5;
-                    float2 uvMinus = float2(dot(tapMinusWS, platterRight), dot(tapMinusWS, platterFwd)) / (2.0 * platterRadius) + 0.5;
-                    float3 tapPlus = sampleTerrainEmission(uvPlus, bounceLod, fallbackCol);
-                    float3 tapMinus = sampleTerrainEmission(uvMinus, bounceLod, fallbackCol);
-                    float3 arcBlended = bounceEmission * 0.50 + (tapPlus + tapMinus) * 0.25;
-                    bounceEmission = lerp(bounceEmission, arcBlended, coplanarSurface);
-                }
-
-                // Tight, smooth cubic perimeter contact spill on coplanar floors/tables
+                // Tighter grounded perimeter contact spill on coplanar floors/tables
+                float contactRange = clamp(platterRadius * 0.72, 0.17, 0.30);
                 float contactT = saturate(closestDist / contactRange);
-                float oneMinusContact = 1.0 - contactT;
-                float contactFalloff = oneMinusContact * oneMinusContact * oneMinusContact;
+                float oneMinusContact = max(0.0, 1.0 - contactT);
+                float contactFalloff = (oneMinusContact > 0.0001) ? pow(oneMinusContact, 2.35) : 0.0;
                 float contactSpill = coplanarSurface * contactFalloff * (1.0 - smoothstep(0.0, platterRadius * 0.35, max(0.0, platterRadius - radialDist)));
 
-                float diffuseWeight = lerp(0.42, 0.32, coplanarSurface);
-                float3 diffuseRgb = bounceEmission * (distAtten * diffuseFacing * diffuseWeight + contactSpill * 0.34);
+                float3 diffuseRgb = bounceEmission * (distAtten * diffuseFacing * 0.42 + contactSpill * 0.46);
 
                 // Under-platter spatially-varying projection when floating above a floor/table (heightOnPlatter < -0.04)
                 float belowMask = smoothstep(-0.04, -0.22, heightOnPlatter) * saturate(dot(surfN, platterN));
@@ -286,8 +270,7 @@ Shader "SonicTopography/RoomLightWash"
 
                 // Representative Point clamp onto the glowing disc (preserves sharp mirror hits inside disc
                 // AND realistic glossy roughness tail right outside the rim on tabletops & shiny floor tiles)
-                float reflClampFrac = lerp(0.94, 0.84, coplanarSurface);
-                float clampedHitR = min(hitRadial, platterRadius * reflClampFrac);
+                float clampedHitR = min(hitRadial, platterRadius * 0.94);
                 float3 clampedInPlane = (hitRadial > 0.0005) ? (hitInPlane * (clampedHitR / hitRadial)) : float3(0.0, 0.0, 0.0);
                 float3 repHitWS = canopyCenter + clampedInPlane;
 
@@ -310,37 +293,30 @@ Shader "SonicTopography/RoomLightWash"
                         float2 reflUV = float2(dot(clampedInPlane, platterRight), dot(clampedInPlane, platterFwd))
                                       / (2.0 * platterRadius) + 0.5;
 
-                        // Distance-proportional mip LOD: crisp high-contrast hotspots near rim (0.80..1.8 floating/wall),
-                        // softened on coplanar grounded floor (min 2.35) to prevent radial rim spokes
+                        // Distance-proportional mip LOD: crisp high-contrast hotspots near rim (0.8..1.8),
+                        // climbing smoothly to soft glossy blur (up to 5.0) with distance and off-axis angle
                         float distFactor = saturate(repDist / max(0.32, platterRadius * 2.6));
                         float offAxisBlur = (1.0 - rDotL) * 4.5;
-                        float minReflLod = lerp(0.80, 2.35, coplanarSurface);
-                        float reflLod = clamp(lerp(minReflLod, 4.85, sqrt(distFactor)) + offAxisBlur, minReflLod, 5.25);
+                        float reflLod = clamp(lerp(0.80, 4.85, sqrt(distFactor)) + offAxisBlur, 0.75, 5.25);
 
-                        float3 reflEmission = sampleTerrainEmission(reflUV, reflLod, fallbackCol);
+                        float3 reflEmission = boostContrastSubtle(sampleTerrainEmission(reflUV, reflLod, fallbackCol));
 
                         // Schlick Fresnel: F = 0.06 + 0.94 * (1 - NdotV)^3.5 (NaN-free)
                         float oneMinusV = max(0.0, 1.0 - nDotV);
                         float fresnel = 0.06 + 0.94 * ((oneMinusV > 0.0001) ? pow(oneMinusV, 3.5) : 0.0);
 
                         float reflDistAtten = 1.0 / (1.0 + dNorm * dNorm * 1.45);
-                        float reflCoplanarWeight = lerp(1.0, 0.55, coplanarSurface);
-                        reflRgb = reflEmission * (fresnel * glossLobe * reflFacing * reflDistAtten * smoothWindow * 0.95 * reflCoplanarWeight);
+                        reflRgb = reflEmission * (fresnel * glossLobe * reflFacing * reflDistAtten * smoothWindow * 0.95);
                     }
                 }
 
-                // Tighter, softer distance envelope strictly for coplanar grounded floors/tables
-                // (leaves floating under-glow and ceiling/wall bounce 100% unchanged)
-                float coplanarEnvelope = 1.0;
-                if (coplanarSurface > 0.001)
-                {
-                    float coplanarScale = clamp(platterRadius * 0.62, 0.14, 0.32);
-                    float coplanarDecay = exp(-(closestDist / coplanarScale) * 2.15)
-                                        * (1.0 - smoothstep(platterRadius * 0.55, platterRadius * 1.18, closestDist));
-                    coplanarEnvelope = lerp(1.0, coplanarDecay, coplanarSurface);
-                }
+                // Tighter grounded reach strictly when snapped coplanar to floor/table (floating/ceiling = 1.0)
+                float coplanarReach = clamp(platterRadius * 0.85, 0.20, 0.42);
+                float coplanarFade = exp(-(closestDist / coplanarReach) * 1.75)
+                                   * (1.0 - smoothstep(coplanarReach * 0.85, coplanarReach * 1.65, closestDist));
+                float groundedEnvelope = lerp(1.0, coplanarFade, coplanarSurface);
 
-                float3 lightRgb = (diffuseRgb + reflRgb) * coplanarEnvelope;
+                float3 lightRgb = (diffuseRgb + reflRgb) * groundedEnvelope;
 
                 // Soft local disc boundary fade (only active on Depth-raycast snapped fallback catcher)
                 if (_uLocalDiscFadeRadius > 0.01)
